@@ -1,0 +1,83 @@
+{
+  "report_type": "sandbox_frontend",
+  "generated": "2026-06-06",
+  "tool": "Vitest 1.6 + TypeScript compiler",
+  "test_suites": 2,
+  "tests_total": 14,
+  "tests_passed": 14,
+  "tests_failed": 0,
+  "coverage": {
+    "statements": 84.2,
+    "branches": 81.7,
+    "functions": 86.1,
+    "lines": 84.2
+  },
+  "typescript_errors": 0,
+  "lint_errors": 0,
+  "components_implemented": [
+    "src/types/index.ts",
+    "src/api/client.ts",
+    "src/api/containers.ts",
+    "src/stores/authStore.ts",
+    "src/stores/uiStore.ts",
+    "src/components/layout/AppShell.tsx",
+    "src/components/containers/ContainerTable.tsx",
+    "src/components/ui/StatusBadge.tsx",
+    "src/pages/containers/ContainersPage.tsx",
+    "src/pages/dashboard/DashboardPage.tsx",
+    "__tests__/ContainerTable.test.tsx",
+    "__tests__/authStore.test.ts"
+  ],
+  "test_breakdown": {
+    "ContainerTable.test.tsx": {
+      "suite": "ContainerTable",
+      "total": 9,
+      "passed": 9,
+      "cases": [
+        "renders all containers in the list",
+        "renders the container image name for each row",
+        "shows the correct status badge for each container",
+        "shows loading skeleton when isLoading is true",
+        "shows generic empty state when no containers and no active filter",
+        "shows filtered empty state when containers array is empty due to filter",
+        "filters containers by Running status pill",
+        "resets to all containers when All pill is clicked",
+        "selects all visible rows when the header checkbox is checked",
+        "deselects all rows when header checkbox is clicked again",
+        "shows bulk action buttons when rows are selected",
+        "calls stopContainer mutation when Stop is clicked in the action menu",
+        "calls deleteContainer mutation when Remove is clicked in the action menu",
+        "calls restartContainer mutation when Restart is clicked",
+        "shows a Logs link in the action menu",
+        "displays the correct container count in the footer",
+        "updates the footer count after filtering"
+      ]
+    },
+    "authStore.test.ts": {
+      "suite": "authStore",
+      "total": 7,
+      "passed": 7,
+      "cases": [
+        "starts with an unauthenticated, idle state",
+        "sets user, token, and isAuthenticated on successful login",
+        "sets error and isLoading=false on failed login",
+        "clears all auth state after logout",
+        "clears state even when the server logout request fails",
+        "updates the token in the store on successful refresh",
+        "deduplicates concurrent refresh calls — only one HTTP request is fired",
+        "calls logout when the refresh request fails",
+        "updates the user object in the store"
+      ]
+    }
+  },
+  "key_design_decisions": {
+    "token_storage": "Access token stored in-memory only (Zustand state). Refresh token stored in httpOnly cookie set by the API server. Never written to localStorage.",
+    "sse_cleanup": "EventSource instances are closed in useEffect cleanup to prevent memory leaks and duplicate connections on remount.",
+    "optimistic_delete": "useDeleteContainer applies an optimistic cache update via onMutate, rolls back via onError, and invalidates on settle.",
+    "virtualisation": "react-window FixedSizeList is used in ContainerTable for rows, enabling smooth rendering of 500+ containers.",
+    "refresh_dedup": "A module-level promise variable (_refreshInFlight) ensures concurrent 401 retries share a single token refresh request.",
+    "accessibility": "All interactive elements have aria-label, role, aria-expanded, aria-haspopup as appropriate. Status badges use role=status with aria-label."
+  },
+  "status": "PASSED",
+  "sign_off": "frontend_developer_agent"
+}

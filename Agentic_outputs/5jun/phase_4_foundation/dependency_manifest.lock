@@ -1,0 +1,455 @@
+# ==============================================================================
+# DCMS Canonical Dependency Manifest
+# Generated:   2026-06-06
+# Approved-by: dependency_manager_agent
+# Pipeline:    Software Factory — Phase 4 (Foundation)
+# Project:     Generic Docker Container Management System (DCMS)
+#
+# Rules:
+#   1. Every version listed here is the ONLY approved version for that package.
+#   2. No service may introduce a transitive dependency not listed here without
+#      a formal dependency-review PR approved by the dependency_manager_agent.
+#   3. Security overrides in [security-overrides] take precedence everywhere.
+#   4. Direct dependencies of each service are additive on top of [go-common].
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# [frontend]
+# Runtime + dev dependencies for the React 18 / TypeScript 5.4 / Vite 5 SPA.
+# ------------------------------------------------------------------------------
+[frontend]
+
+# Core framework
+react@18.3.1
+react-dom@18.3.1
+
+# Language & build
+typescript@5.4.5
+vite@5.2.11
+@vitejs/plugin-react@4.3.0
+
+# Styling
+tailwindcss@3.4.4
+postcss@8.4.38
+autoprefixer@10.4.19
+clsx@2.1.1
+tailwind-merge@2.3.0
+
+# Routing
+react-router-dom@6.23.1
+
+# Server-state / data fetching
+@tanstack/react-query@5.45.1
+@tanstack/react-query-devtools@5.45.1
+axios@1.7.2
+
+# Client-state
+zustand@4.5.2
+immer@10.1.1
+
+# Charts & visualization
+recharts@2.12.7
+
+# Date utilities
+date-fns@3.6.0
+
+# Icons
+lucide-react@0.395.0
+
+# Headless UI primitives (Radix UI)
+@radix-ui/react-dialog@1.0.5
+@radix-ui/react-dropdown-menu@2.0.6
+@radix-ui/react-toast@1.1.5
+@radix-ui/react-tooltip@1.0.7
+@radix-ui/react-popover@1.0.7
+@radix-ui/react-select@2.0.0
+@radix-ui/react-tabs@1.0.4
+@radix-ui/react-switch@1.0.3
+@radix-ui/react-checkbox@1.0.4
+@radix-ui/react-separator@1.0.3
+@radix-ui/react-label@2.0.2
+@radix-ui/react-alert-dialog@1.0.5
+@radix-ui/react-progress@1.0.3
+@radix-ui/react-scroll-area@1.0.5
+@radix-ui/react-slot@1.0.2
+
+# Forms
+react-hook-form@7.52.1
+@hookform/resolvers@3.6.0
+zod@3.23.8
+
+# Virtualization (large log / container lists)
+@tanstack/react-virtual@3.5.0
+
+# Terminal / log viewer
+xterm@5.3.0
+xterm-addon-fit@0.8.0
+xterm-addon-web-links@0.9.0
+
+# WebSocket client
+reconnecting-websocket@4.4.0
+
+# Utilities
+lodash-es@4.17.21
+uuid@10.0.0
+
+# Code highlighting (log and image inspect views)
+prismjs@1.29.0
+react-syntax-highlighter@15.5.0
+
+# ---- Dev / Test ----
+vitest@1.6.0
+@vitest/coverage-v8@1.6.0
+@testing-library/react@16.0.0
+@testing-library/user-event@14.5.2
+@testing-library/jest-dom@6.4.6
+@playwright/test@1.44.1
+jsdom@24.1.0
+msw@2.3.1
+
+# Linting / formatting
+eslint@9.5.0
+@typescript-eslint/eslint-plugin@7.13.0
+@typescript-eslint/parser@7.13.0
+eslint-plugin-react@7.34.3
+eslint-plugin-react-hooks@4.6.2
+eslint-plugin-jsx-a11y@6.8.0
+eslint-plugin-import@2.29.1
+prettier@3.3.2
+prettier-plugin-tailwindcss@0.6.5
+
+# Type stubs
+@types/react@18.3.3
+@types/react-dom@18.3.0
+@types/lodash-es@4.17.12
+@types/uuid@10.0.0
+@types/prismjs@1.26.4
+@types/react-syntax-highlighter@15.5.13
+@types/node@20.14.9
+
+
+# ------------------------------------------------------------------------------
+# [go-common]
+# Shared Go modules imported by ALL backend microservices.
+# Each service go.mod REPLACES these at the exact listed version.
+# ------------------------------------------------------------------------------
+[go-common]
+
+# HTTP framework
+github.com/gin-gonic/gin@v1.10.0
+github.com/gin-contrib/cors@v1.7.2
+github.com/gin-contrib/gzip@v1.0.1
+github.com/gin-contrib/requestid@v1.0.3
+
+# ORM & database
+gorm.io/gorm@v1.25.10
+gorm.io/driver/postgres@v1.5.9
+github.com/jackc/pgx/v5@v5.6.0
+
+# Cache / broker
+github.com/redis/go-redis/v9@v9.5.3
+
+# Migrations
+github.com/golang-migrate/migrate/v4@v4.17.1
+
+# Authentication
+github.com/golang-jwt/jwt/v5@v5.2.1
+golang.org/x/crypto@v0.24.0
+
+# Observability — tracing
+go.opentelemetry.io/otel@v1.27.0
+go.opentelemetry.io/otel/sdk@v1.27.0
+go.opentelemetry.io/otel/trace@v1.27.0
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.27.0
+go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.27.0
+go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin@v0.52.0
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.52.0
+
+# Observability — metrics
+github.com/prometheus/client_golang@v1.19.1
+
+# Logging
+go.uber.org/zap@v1.27.0
+go.uber.org/zap/exp@v0.2.0
+
+# Configuration
+github.com/spf13/viper@v1.19.0
+
+# gRPC & Protobuf
+google.golang.org/grpc@v1.64.0
+google.golang.org/protobuf@v1.34.2
+github.com/grpc-ecosystem/grpc-gateway/v2@v2.20.0
+google.golang.org/genproto/googleapis/api@v0.0.0-20240610135401-a8a788485cec
+google.golang.org/genproto/googleapis/rpc@v0.0.0-20240610135401-a8a788485cec
+
+# Validation
+github.com/go-playground/validator/v10@v10.22.0
+
+# UUID
+github.com/google/uuid@v1.6.0
+
+# Environment / secrets
+github.com/joho/godotenv@v1.5.1
+
+# HTTP client utilities
+github.com/hashicorp/go-retryablehttp@v0.7.7
+
+# Testing
+github.com/stretchr/testify@v1.9.0
+github.com/stretchr/mock@v1.6.0
+github.com/testcontainers/testcontainers-go@v0.31.0
+github.com/testcontainers/testcontainers-go/modules/postgres@v0.31.0
+github.com/testcontainers/testcontainers-go/modules/redis@v0.31.0
+go.uber.org/mock@v0.4.0
+
+# Miscellaneous
+github.com/samber/lo@v1.39.0
+github.com/deckarep/golang-set/v2@v2.6.0
+
+
+# ------------------------------------------------------------------------------
+# [api-gateway]
+# Kong 3.7 OSS — configuration only (no Go service; managed via deck CLI).
+# The gateway itself runs from the official kong:3.7.1-ubuntu Docker image.
+# Plugin dependencies are pinned via Kong plugin catalog.
+# ------------------------------------------------------------------------------
+[api-gateway]
+
+# Kong image (referenced in docker-compose / Swarm stack)
+# image: kong:3.7.1-ubuntu    sha256:pinned-in-infra/docker-compose/docker-compose.yml
+
+# Kong plugins approved for use:
+#   kong-plugin-jwt            (bundled — no extra install)
+#   kong-plugin-rate-limiting  (bundled)
+#   kong-plugin-request-transformer (bundled)
+#   kong-plugin-prometheus     (bundled)
+#   kong-plugin-correlation-id (bundled)
+#   kong-plugin-http-log       (bundled)
+
+# deck CLI (used in CI to sync declarative config)
+# deck@1.38.1   — installed via GitHub Releases in CI image
+
+
+# ------------------------------------------------------------------------------
+# [auth-service]
+# Adds on top of [go-common].
+# ------------------------------------------------------------------------------
+[auth-service]
+
+# go-common applies in full
+# (no additional service-specific direct dependencies)
+
+
+# ------------------------------------------------------------------------------
+# [container-service]
+# Adds on top of [go-common].
+# Primary integration: Moby / Docker Engine SDK.
+# ------------------------------------------------------------------------------
+[container-service]
+
+# Docker / Moby SDK
+github.com/docker/docker@v26.1.4+incompatible
+github.com/docker/go-connections@v0.5.0
+github.com/docker/distribution@v2.8.3+incompatible
+github.com/opencontainers/image-spec@v1.1.0
+github.com/opencontainers/runtime-spec@v1.2.0
+
+# WebSocket streaming (container exec / attach)
+github.com/gorilla/websocket@v1.5.3
+
+
+# ------------------------------------------------------------------------------
+# [image-service]
+# Adds on top of [go-common].
+# Handles registry interactions and vulnerability scanning integration.
+# ------------------------------------------------------------------------------
+[image-service]
+
+# Container registry
+github.com/google/go-containerregistry@v0.19.2
+
+# Trivy integration (scan results consumed via trivy REST API; library pinned
+# to match the sidecar Trivy server version deployed in infra)
+github.com/aquasecurity/trivy-db@v0.0.0-20240514071400-c18f7e58f69a
+github.com/aquasecurity/trivy/pkg/fanal@v0.52.2      # image analysis primitives
+
+# Docker SDK (image pull / push / inspect)
+github.com/docker/docker@v26.1.4+incompatible
+github.com/docker/distribution@v2.8.3+incompatible
+github.com/opencontainers/image-spec@v1.1.0
+
+# Auth helpers for private registries
+github.com/docker/cli@v26.1.4+incompatible
+
+
+# ------------------------------------------------------------------------------
+# [network-service]
+# Adds on top of [go-common].
+# ------------------------------------------------------------------------------
+[network-service]
+
+# Docker SDK (network management)
+github.com/docker/docker@v26.1.4+incompatible
+github.com/docker/go-connections@v0.5.0
+
+# CIDR / IP utilities
+github.com/apparentlymart/go-cidr@v1.1.0
+
+
+# ------------------------------------------------------------------------------
+# [volume-service]
+# Adds on top of [go-common].
+# ------------------------------------------------------------------------------
+[volume-service]
+
+# Docker SDK (volume management)
+github.com/docker/docker@v26.1.4+incompatible
+
+# Archiving (backup / restore)
+github.com/mholt/archiver/v4@v4.0.0-alpha.8
+github.com/klauspost/compress@v1.17.8
+
+
+# ------------------------------------------------------------------------------
+# [monitor-service]
+# Adds on top of [go-common].
+# Aggregates Docker stats streams and exposes Prometheus metrics.
+# ------------------------------------------------------------------------------
+[monitor-service]
+
+# Docker SDK (stats streaming)
+github.com/docker/docker@v26.1.4+incompatible
+
+# Prometheus exposition
+github.com/prometheus/client_golang@v1.19.1   # already in go-common; explicit pin
+github.com/prometheus/common@v0.54.0
+github.com/prometheus/procfs@v0.15.1
+
+# Time-series storage (local ring buffer via embedded TSDB)
+github.com/prometheus/prometheus@v0.52.1
+
+
+# ------------------------------------------------------------------------------
+# [log-service]
+# Adds on top of [go-common].
+# Streams, aggregates, and stores container logs; ships to Loki.
+# ------------------------------------------------------------------------------
+[log-service]
+
+# Docker SDK (log streaming)
+github.com/docker/docker@v26.1.4+incompatible
+
+# Loki client
+github.com/grafana/loki/pkg/push@v0.0.0-20240531115153-c5c86e9d4a2b
+
+# Tail / multi-reader
+github.com/nxadm/tail@v1.4.11
+
+# WebSocket streaming to frontend
+github.com/gorilla/websocket@v1.5.3
+
+
+# ------------------------------------------------------------------------------
+# [cluster-service]
+# Adds on top of [go-common].
+# Manages Docker Swarm clusters and node lifecycle.
+# ------------------------------------------------------------------------------
+[cluster-service]
+
+# Docker SDK (Swarm management)
+github.com/docker/docker@v26.1.4+incompatible
+github.com/docker/go-connections@v0.5.0
+
+# SSH for remote host access
+golang.org/x/crypto@v0.24.0              # already in go-common; explicit pin
+github.com/melbahja/goph@v1.4.0
+
+
+# ------------------------------------------------------------------------------
+# [notification-service]
+# Adds on top of [go-common].
+# Sends email, Slack, and webhook alerts.
+# ------------------------------------------------------------------------------
+[notification-service]
+
+# Email
+github.com/wneessen/go-mail@v0.4.1
+
+# Slack
+github.com/slack-go/slack@v0.13.0
+
+# Webhook retry
+github.com/hashicorp/go-retryablehttp@v0.7.7   # already in go-common; explicit pin
+
+# Template engine (HTML email bodies)
+html/template   # stdlib — no version pin needed
+
+
+# ------------------------------------------------------------------------------
+# [agent]
+# Lightweight agent binary deployed on each managed Docker host.
+# Communicates back to cluster-service via gRPC (mTLS).
+# ------------------------------------------------------------------------------
+[agent]
+
+# Docker SDK
+github.com/docker/docker@v26.1.4+incompatible
+github.com/docker/go-connections@v0.5.0
+
+# gRPC (already in go-common; explicit for clarity)
+google.golang.org/grpc@v1.64.0
+google.golang.org/protobuf@v1.34.2
+
+# mTLS certificate management
+github.com/caddyserver/certmagic@v0.21.3
+github.com/libdns/cloudflare@v0.1.1          # optional ACME DNS challenge
+
+# System info
+github.com/shirou/gopsutil/v3@v3.24.4
+
+# Configuration (minimal; viper is fine)
+github.com/spf13/viper@v1.19.0              # already in go-common; explicit pin
+
+
+# ------------------------------------------------------------------------------
+# [security-overrides]
+# Versions pinned here override any transitive resolution due to active CVEs.
+# All overrides must be accompanied by a CVE reference and a review ticket.
+# ------------------------------------------------------------------------------
+[security-overrides]
+
+# CVE-2023-44487 (HTTP/2 Rapid Reset) — affects golang.org/x/net < 0.17.0
+# Ticket: DCMS-SEC-001
+golang.org/x/net@v0.26.0
+
+# CVE-2024-24786 (protobuf infinite loop) — affects google.golang.org/protobuf < 1.33.0
+# Ticket: DCMS-SEC-002
+google.golang.org/protobuf@v1.34.2
+
+# CVE-2023-48795 (Terrapin SSH) — affects golang.org/x/crypto < 0.17.0
+# Ticket: DCMS-SEC-003
+golang.org/x/crypto@v0.24.0
+
+# CVE-2024-28180 (go-jose memory exhaustion) — affects gopkg.in/square/go-jose.v2 < 2.6.0
+# Ticket: DCMS-SEC-004
+# go-jose is a transitive dep of jwt/v5; resolved by upgrading jwt/v5 to v5.2.1+
+github.com/golang-jwt/jwt/v5@v5.2.1
+
+# CVE-2024-29018 (Docker DNS rebinding via internal network) — affects docker < 26.0.2
+# Ticket: DCMS-SEC-005
+github.com/docker/docker@v26.1.4+incompatible
+
+# CVE-2024-21626 (runc container escape) — affects runc < 1.1.12
+# Ticket: DCMS-SEC-006
+# Mitigated by base image; agents must run on hosts with runc >= 1.1.12.
+# No Go module pin; enforce via host OS patch policy.
+
+# CVE-2024-3094 (xz/liblzma backdoor) — affects xz-utils 5.6.0, 5.6.1
+# Ticket: DCMS-SEC-007
+# Not a Go module; enforced in Dockerfile base image selection.
+# All Dockerfiles must use debian:bookworm-slim >= 20240401 or alpine >= 3.19.1.
+
+# GHSA-2c7c-3mj9-8ppk (axios SSRF) — affects axios < 1.7.2 (frontend)
+# Ticket: DCMS-SEC-008
+# axios@1.7.2    (already pinned in [frontend])

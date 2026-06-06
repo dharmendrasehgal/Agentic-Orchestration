@@ -1,0 +1,1962 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DCMS API",
+    "version": "1.0.0",
+    "description": "Generic Docker Container Management System REST API. Provides full lifecycle management of containers, images, networks, volumes, clusters, monitoring, logging, and user administration across multi-host Docker Swarm deployments."
+  },
+  "servers": [
+    {
+      "url": "https://api.dcms.internal/v1",
+      "description": "Production API Gateway"
+    },
+    {
+      "url": "https://api.staging.dcms.internal/v1",
+      "description": "Staging API Gateway"
+    },
+    {
+      "url": "http://localhost:8080/v1",
+      "description": "Local development"
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "tags": [
+    { "name": "auth", "description": "Authentication and session management" },
+    { "name": "containers", "description": "Container lifecycle management" },
+    { "name": "images", "description": "Image management and vulnerability scanning" },
+    { "name": "networks", "description": "Docker network management" },
+    { "name": "volumes", "description": "Docker volume management" },
+    { "name": "clusters", "description": "Docker Swarm cluster and node management" },
+    { "name": "monitoring", "description": "Metrics and alerting" },
+    { "name": "logs", "description": "Centralized log search" },
+    { "name": "users", "description": "User management and RBAC" }
+  ],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "summary": "Authenticate user and obtain JWT tokens",
+        "tags": ["auth"],
+        "security": [],
+        "operationId": "authLogin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "admin@example.com" },
+                  "password": { "type": "string", "format": "password", "minLength": 8 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "description": "JWT access token" },
+                    "refresh_token": { "type": "string", "description": "Opaque refresh token" },
+                    "expires_in": { "type": "integer", "description": "Access token TTL in seconds", "example": 3600 },
+                    "token_type": { "type": "string", "example": "Bearer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Obtain a new access token using a refresh token",
+        "tags": ["auth"],
+        "security": [],
+        "operationId": "authRefresh",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["refresh_token"],
+                "properties": {
+                  "refresh_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token refreshed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string" },
+                    "refresh_token": { "type": "string" },
+                    "expires_in": { "type": "integer" },
+                    "token_type": { "type": "string", "example": "Bearer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "summary": "Revoke the current session and invalidate refresh token",
+        "tags": ["auth"],
+        "operationId": "authLogout",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["refresh_token"],
+                "properties": {
+                  "refresh_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logout successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string", "example": "Logged out successfully" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers": {
+      "get": {
+        "summary": "List containers with optional filters and pagination",
+        "tags": ["containers"],
+        "operationId": "listContainers",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Filter by namespace (label dcms.namespace)"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["created", "running", "paused", "restarting", "removing", "exited", "dead"]
+            },
+            "description": "Filter by container status"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "default": 1 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of containers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/PaginatedResponse" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Container" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "summary": "Create and optionally start a new container",
+        "tags": ["containers"],
+        "operationId": "createContainer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ContainerCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Container created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Container" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}": {
+      "get": {
+        "summary": "Get detailed information about a specific container",
+        "tags": ["containers"],
+        "operationId": "getContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Container detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Container" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "delete": {
+        "summary": "Remove a container (must be stopped first unless force=true)",
+        "tags": ["containers"],
+        "operationId": "deleteContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" },
+          {
+            "name": "force",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "Force removal of a running container"
+          },
+          {
+            "name": "remove_volumes",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "Remove anonymous volumes attached to the container"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Container removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/start": {
+      "post": {
+        "summary": "Start a stopped container",
+        "tags": ["containers"],
+        "operationId": "startContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Container started",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Container" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/stop": {
+      "post": {
+        "summary": "Stop a running container",
+        "tags": ["containers"],
+        "operationId": "stopContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" },
+          {
+            "name": "timeout",
+            "in": "query",
+            "schema": { "type": "integer", "default": 10 },
+            "description": "Seconds to wait before killing the container"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Container stopped",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Container" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/restart": {
+      "post": {
+        "summary": "Restart a container",
+        "tags": ["containers"],
+        "operationId": "restartContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" },
+          {
+            "name": "timeout",
+            "in": "query",
+            "schema": { "type": "integer", "default": 10 },
+            "description": "Seconds to wait before killing the container"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Container restarted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Container" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/logs": {
+      "get": {
+        "summary": "Stream container logs as Server-Sent Events",
+        "tags": ["containers"],
+        "operationId": "streamContainerLogs",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" },
+          {
+            "name": "tail",
+            "in": "query",
+            "schema": { "type": "integer", "default": 100 },
+            "description": "Number of lines to show from end of logs before streaming"
+          },
+          {
+            "name": "follow",
+            "in": "query",
+            "schema": { "type": "boolean", "default": true },
+            "description": "Whether to stream new log lines"
+          },
+          {
+            "name": "timestamps",
+            "in": "query",
+            "schema": { "type": "boolean", "default": true }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE log stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events stream. Each event is a JSON-encoded LogEntry."
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/stats": {
+      "get": {
+        "summary": "Stream container resource statistics as Server-Sent Events",
+        "tags": ["containers"],
+        "operationId": "streamContainerStats",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" },
+          {
+            "name": "stream",
+            "in": "query",
+            "schema": { "type": "boolean", "default": true },
+            "description": "If false, return a single snapshot and close"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stats stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events stream. Each event is a JSON-encoded ContainerStats."
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/containers/{id}/exec": {
+      "post": {
+        "summary": "Execute a command inside a running container",
+        "tags": ["containers"],
+        "operationId": "execContainer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ContainerId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["cmd"],
+                "properties": {
+                  "cmd": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "example": ["sh", "-c", "env"]
+                  },
+                  "env": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Additional environment variables in KEY=VALUE format"
+                  },
+                  "workdir": { "type": "string" },
+                  "user": { "type": "string" },
+                  "tty": { "type": "boolean", "default": false },
+                  "detach": { "type": "boolean", "default": false }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exec result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": { "type": "integer" },
+                    "stdout": { "type": "string" },
+                    "stderr": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images": {
+      "get": {
+        "summary": "List images available on managed hosts",
+        "tags": ["images"],
+        "operationId": "listImages",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "default": 1 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20 }
+          },
+          {
+            "name": "host_id",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Filter to images on a specific host"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of images",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/PaginatedResponse" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Image" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images/pull": {
+      "post": {
+        "summary": "Pull an image from a registry",
+        "tags": ["images"],
+        "operationId": "pullImage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["image"],
+                "properties": {
+                  "image": { "type": "string", "example": "nginx" },
+                  "tag": { "type": "string", "default": "latest", "example": "1.25-alpine" },
+                  "registry": { "type": "string", "description": "Registry hostname; defaults to Docker Hub", "example": "registry.internal.example.com" },
+                  "auth": {
+                    "type": "object",
+                    "description": "Registry credentials (stored in Vault, referenced by name instead)",
+                    "properties": {
+                      "username": { "type": "string" },
+                      "password": { "type": "string", "format": "password" }
+                    }
+                  },
+                  "host_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Target host IDs to pull to; defaults to all hosts"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pull task accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task_id": { "type": "string" },
+                    "status": { "type": "string", "example": "pulling" },
+                    "image": { "$ref": "#/components/schemas/Image" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images/{id}": {
+      "get": {
+        "summary": "Get image details by ID",
+        "tags": ["images"],
+        "operationId": "getImage",
+        "parameters": [
+          { "$ref": "#/components/parameters/ImageId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Image" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "delete": {
+        "summary": "Delete an image from a managed host",
+        "tags": ["images"],
+        "operationId": "deleteImage",
+        "parameters": [
+          { "$ref": "#/components/parameters/ImageId" },
+          {
+            "name": "force",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images/{id}/scan": {
+      "post": {
+        "summary": "Trigger a vulnerability scan for an image",
+        "tags": ["images"],
+        "operationId": "scanImage",
+        "parameters": [
+          { "$ref": "#/components/parameters/ImageId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scan task queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "status": { "type": "string", "example": "queued" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images/{id}/scan/results": {
+      "get": {
+        "summary": "Retrieve the latest vulnerability scan results for an image",
+        "tags": ["images"],
+        "operationId": "getImageScanResults",
+        "parameters": [
+          { "$ref": "#/components/parameters/ImageId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scan results",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ImageScanResult" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/networks": {
+      "get": {
+        "summary": "List Docker networks across managed hosts",
+        "tags": ["networks"],
+        "operationId": "listNetworks",
+        "parameters": [
+          {
+            "name": "host_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of networks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Network" }
+                    },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "summary": "Create a Docker network",
+        "tags": ["networks"],
+        "operationId": "createNetwork",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "driver"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "driver": { "type": "string", "enum": ["bridge", "overlay", "macvlan", "host", "none"], "default": "bridge" },
+                  "host_id": { "type": "string" },
+                  "attachable": { "type": "boolean", "default": false },
+                  "internal": { "type": "boolean", "default": false },
+                  "options": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Network created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Network" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/networks/{id}": {
+      "delete": {
+        "summary": "Remove a Docker network",
+        "tags": ["networks"],
+        "operationId": "deleteNetwork",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Network removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/volumes": {
+      "get": {
+        "summary": "List Docker volumes across managed hosts",
+        "tags": ["volumes"],
+        "operationId": "listVolumes",
+        "parameters": [
+          {
+            "name": "host_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of volumes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Volume" }
+                    },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "summary": "Create a Docker volume",
+        "tags": ["volumes"],
+        "operationId": "createVolume",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "driver": { "type": "string", "default": "local" },
+                  "host_id": { "type": "string" },
+                  "driver_opts": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Volume created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Volume" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/volumes/{id}": {
+      "delete": {
+        "summary": "Remove a Docker volume",
+        "tags": ["volumes"],
+        "operationId": "deleteVolume",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          {
+            "name": "force",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Volume removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/clusters": {
+      "get": {
+        "summary": "List Docker Swarm clusters managed by DCMS",
+        "tags": ["clusters"],
+        "operationId": "listClusters",
+        "responses": {
+          "200": {
+            "description": "List of clusters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Cluster" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/clusters/nodes": {
+      "get": {
+        "summary": "List all Swarm nodes across clusters",
+        "tags": ["clusters"],
+        "operationId": "listNodes",
+        "parameters": [
+          {
+            "name": "cluster_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["manager", "worker"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of nodes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Node" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/clusters/nodes/{id}/drain": {
+      "post": {
+        "summary": "Drain a Swarm node to prepare it for maintenance",
+        "tags": ["clusters"],
+        "operationId": "drainNode",
+        "parameters": [
+          { "$ref": "#/components/parameters/NodeId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Node drain initiated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Node" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/clusters/nodes/{id}/activate": {
+      "post": {
+        "summary": "Re-activate a drained or paused Swarm node",
+        "tags": ["clusters"],
+        "operationId": "activateNode",
+        "parameters": [
+          { "$ref": "#/components/parameters/NodeId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Node activated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Node" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/monitoring/metrics": {
+      "get": {
+        "summary": "Query current metrics for a host or container",
+        "tags": ["monitoring"],
+        "operationId": "getMetrics",
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Host identifier to scope metrics"
+          },
+          {
+            "name": "container",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Container ID to scope metrics"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "schema": { "type": "string", "default": "60s" },
+            "description": "Resolution step for range queries (Prometheus duration syntax)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metrics data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cpu_percent": { "type": "number", "format": "float" },
+                    "mem_used_bytes": { "type": "integer" },
+                    "mem_limit_bytes": { "type": "integer" },
+                    "net_rx_bytes": { "type": "integer" },
+                    "net_tx_bytes": { "type": "integer" },
+                    "block_read_bytes": { "type": "integer" },
+                    "block_write_bytes": { "type": "integer" },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/monitoring/alerts": {
+      "get": {
+        "summary": "List active or resolved alerts",
+        "tags": ["monitoring"],
+        "operationId": "listAlerts",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["firing", "resolved", "pending", "silenced"],
+              "default": "firing"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["critical", "warning", "info"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of alerts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Alert" }
+                    },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/logs/search": {
+      "get": {
+        "summary": "Full-text search across aggregated container logs (Loki-backed)",
+        "tags": ["logs"],
+        "operationId": "searchLogs",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "LogQL-compatible query string"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Start of time range (RFC 3339)"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "End of time range (RFC 3339)"
+          },
+          {
+            "name": "container_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 100 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Log search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/LogEntry" }
+                    },
+                    "total": { "type": "integer" },
+                    "has_more": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "summary": "List users in the caller's organisation",
+        "tags": ["users"],
+        "operationId": "listUsers",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "default": 1 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/PaginatedResponse" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/User" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "summary": "Invite a new user to the organisation",
+        "tags": ["users"],
+        "operationId": "inviteUser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "role"],
+                "properties": {
+                  "email": { "type": "string", "format": "email" },
+                  "role": { "$ref": "#/components/schemas/UserRole" },
+                  "name": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Invitation sent; user record created in pending state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/User" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/users/{id}/role": {
+      "patch": {
+        "summary": "Update a user's RBAC role",
+        "tags": ["users"],
+        "operationId": "updateUserRole",
+        "parameters": [
+          { "$ref": "#/components/parameters/UserId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["role"],
+                "properties": {
+                  "role": { "$ref": "#/components/schemas/UserRole" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "User role updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/User" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "ContainerId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Docker container ID (short or full 64-char hash)"
+      },
+      "ImageId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Docker image ID (sha256 digest or repository:tag)"
+      },
+      "ResourceId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Resource ID"
+      },
+      "NodeId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Swarm node ID"
+      },
+      "UserId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "User UUID"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed request or validation error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing or invalid authentication token",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but insufficient permissions",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected server error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "RS256-signed JWT issued by /auth/login. Include as: Authorization: Bearer <token>"
+      }
+    },
+    "schemas": {
+      "Container": {
+        "type": "object",
+        "description": "Represents a Docker container managed by DCMS",
+        "properties": {
+          "id": { "type": "string", "description": "Docker container ID (64-char SHA256)" },
+          "short_id": { "type": "string", "description": "First 12 characters of container ID" },
+          "name": { "type": "string", "example": "my-nginx" },
+          "image": { "type": "string", "example": "nginx:1.25-alpine" },
+          "image_id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["created", "running", "paused", "restarting", "removing", "exited", "dead"]
+          },
+          "state": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": "string", "format": "date-time" },
+          "host_id": { "type": "string", "description": "DCMS host record ID for the Docker daemon" },
+          "host_name": { "type": "string" },
+          "namespace": { "type": "string", "description": "Logical namespace (from dcms.namespace label)" },
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "container_port": { "type": "integer" },
+                "host_port": { "type": "integer" },
+                "protocol": { "type": "string", "enum": ["tcp", "udp"] },
+                "host_ip": { "type": "string" }
+              }
+            }
+          },
+          "env": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Environment variables (redacted values for secrets)"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "networks": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": { "type": "string" },
+                "destination": { "type": "string" },
+                "mode": { "type": "string" }
+              }
+            }
+          },
+          "restart_count": { "type": "integer" },
+          "restart_policy": { "type": "string" },
+          "cpu_shares": { "type": "integer" },
+          "memory_limit_bytes": { "type": "integer" }
+        },
+        "required": ["id", "name", "image", "status", "host_id", "created_at"]
+      },
+      "ContainerCreateRequest": {
+        "type": "object",
+        "description": "Payload to create a new container",
+        "required": ["image", "host_id"],
+        "properties": {
+          "image": { "type": "string", "example": "nginx:1.25-alpine" },
+          "name": { "type": "string", "description": "Optional container name; auto-generated if omitted" },
+          "host_id": { "type": "string", "description": "Target DCMS host ID" },
+          "namespace": { "type": "string" },
+          "cmd": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Override the image CMD"
+          },
+          "entrypoint": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "env": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "KEY=VALUE pairs"
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["container_port"],
+              "properties": {
+                "container_port": { "type": "integer" },
+                "host_port": { "type": "integer" },
+                "protocol": { "type": "string", "enum": ["tcp", "udp"], "default": "tcp" },
+                "host_ip": { "type": "string", "default": "0.0.0.0" }
+              }
+            }
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["source", "destination"],
+              "properties": {
+                "source": { "type": "string" },
+                "destination": { "type": "string" },
+                "mode": { "type": "string", "enum": ["ro", "rw"], "default": "rw" }
+              }
+            }
+          },
+          "networks": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "restart_policy": {
+            "type": "string",
+            "enum": ["no", "always", "on-failure", "unless-stopped"],
+            "default": "no"
+          },
+          "cpu_shares": { "type": "integer", "description": "Relative CPU weight (1-1024)" },
+          "cpu_quota": { "type": "integer", "description": "CPU CFS quota in microseconds" },
+          "memory_limit_bytes": { "type": "integer", "description": "Memory limit; 0 = unlimited" },
+          "memory_swap_bytes": { "type": "integer" },
+          "privileged": { "type": "boolean", "default": false },
+          "read_only_rootfs": { "type": "boolean", "default": false },
+          "user": { "type": "string", "description": "UID or UID:GID to run the container as" },
+          "working_dir": { "type": "string" },
+          "auto_start": { "type": "boolean", "default": true, "description": "Start container immediately after creation" }
+        }
+      },
+      "ContainerStats": {
+        "type": "object",
+        "description": "Point-in-time resource utilisation snapshot for a container",
+        "properties": {
+          "container_id": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "cpu_percent": { "type": "number", "format": "float", "description": "CPU usage as a percentage of total host CPU" },
+          "cpu_system_delta": { "type": "integer" },
+          "cpu_total_delta": { "type": "integer" },
+          "cpu_online_cpus": { "type": "integer" },
+          "mem_usage_bytes": { "type": "integer" },
+          "mem_limit_bytes": { "type": "integer" },
+          "mem_percent": { "type": "number", "format": "float" },
+          "mem_cache_bytes": { "type": "integer" },
+          "net_rx_bytes": { "type": "integer" },
+          "net_tx_bytes": { "type": "integer" },
+          "net_rx_packets": { "type": "integer" },
+          "net_tx_packets": { "type": "integer" },
+          "block_read_bytes": { "type": "integer" },
+          "block_write_bytes": { "type": "integer" },
+          "pids": { "type": "integer" }
+        },
+        "required": ["container_id", "timestamp"]
+      },
+      "Image": {
+        "type": "object",
+        "description": "Docker image record as tracked by DCMS",
+        "properties": {
+          "id": { "type": "string", "description": "sha256 digest" },
+          "short_id": { "type": "string" },
+          "repository": { "type": "string", "example": "nginx" },
+          "tag": { "type": "string", "example": "1.25-alpine" },
+          "digest": { "type": "string" },
+          "size_bytes": { "type": "integer" },
+          "virtual_size_bytes": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "pulled_at": { "type": "string", "format": "date-time" },
+          "host_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "DCMS host IDs that have this image"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "os": { "type": "string", "example": "linux" },
+          "architecture": { "type": "string", "example": "amd64" },
+          "last_scan_at": { "type": "string", "format": "date-time" },
+          "scan_status": {
+            "type": "string",
+            "enum": ["not_scanned", "queued", "scanning", "passed", "failed", "error"]
+          },
+          "vulnerability_summary": {
+            "type": "object",
+            "properties": {
+              "critical": { "type": "integer" },
+              "high": { "type": "integer" },
+              "medium": { "type": "integer" },
+              "low": { "type": "integer" },
+              "unknown": { "type": "integer" }
+            }
+          }
+        },
+        "required": ["id", "repository", "tag", "created_at"]
+      },
+      "ImageScanResult": {
+        "type": "object",
+        "description": "Vulnerability scan results for a Docker image",
+        "properties": {
+          "scan_id": { "type": "string" },
+          "image_id": { "type": "string" },
+          "image_ref": { "type": "string", "example": "nginx:1.25-alpine@sha256:abc123" },
+          "scanner": { "type": "string", "example": "trivy" },
+          "scanner_version": { "type": "string" },
+          "db_updated_at": { "type": "string", "format": "date-time" },
+          "scanned_at": { "type": "string", "format": "date-time" },
+          "status": { "type": "string", "enum": ["queued", "scanning", "complete", "error"] },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "critical": { "type": "integer" },
+              "high": { "type": "integer" },
+              "medium": { "type": "integer" },
+              "low": { "type": "integer" },
+              "unknown": { "type": "integer" },
+              "total": { "type": "integer" }
+            }
+          },
+          "vulnerabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cve_id": { "type": "string", "example": "CVE-2024-12345" },
+                "package_name": { "type": "string" },
+                "installed_version": { "type": "string" },
+                "fixed_version": { "type": "string" },
+                "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"] },
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "cvss_score": { "type": "number", "format": "float" },
+                "references": {
+                  "type": "array",
+                  "items": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "required": ["scan_id", "image_id", "scanned_at", "status"]
+      },
+      "Network": {
+        "type": "object",
+        "description": "Docker network",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "driver": { "type": "string" },
+          "scope": { "type": "string", "enum": ["local", "swarm", "global"] },
+          "internal": { "type": "boolean" },
+          "attachable": { "type": "boolean" },
+          "ingress": { "type": "boolean" },
+          "ipam": {
+            "type": "object",
+            "properties": {
+              "driver": { "type": "string" },
+              "config": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "subnet": { "type": "string" },
+                    "gateway": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "containers": {
+            "type": "object",
+            "description": "Map of container ID to network endpoint info",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "ipv4_address": { "type": "string" },
+                "mac_address": { "type": "string" }
+              }
+            }
+          },
+          "options": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "host_id": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "driver"]
+      },
+      "Volume": {
+        "type": "object",
+        "description": "Docker volume",
+        "properties": {
+          "name": { "type": "string" },
+          "driver": { "type": "string" },
+          "mountpoint": { "type": "string" },
+          "scope": { "type": "string", "enum": ["local", "global"] },
+          "options": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "host_id": { "type": "string" },
+          "size_bytes": { "type": "integer", "description": "Physical size; -1 if unsupported by driver" },
+          "ref_count": { "type": "integer", "description": "Number of containers using this volume" },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["name", "driver", "host_id"]
+      },
+      "Node": {
+        "type": "object",
+        "description": "Docker Swarm node",
+        "properties": {
+          "id": { "type": "string" },
+          "hostname": { "type": "string" },
+          "role": { "type": "string", "enum": ["manager", "worker"] },
+          "availability": { "type": "string", "enum": ["active", "pause", "drain"] },
+          "status": { "type": "string", "enum": ["ready", "down", "disconnected", "unknown"] },
+          "manager_status": {
+            "type": "object",
+            "description": "Present only for manager nodes",
+            "properties": {
+              "addr": { "type": "string" },
+              "leader": { "type": "boolean" },
+              "reachability": { "type": "string", "enum": ["reachable", "unreachable", "unknown"] }
+            }
+          },
+          "engine_version": { "type": "string" },
+          "os": { "type": "string" },
+          "architecture": { "type": "string" },
+          "cpus": { "type": "integer" },
+          "memory_bytes": { "type": "integer" },
+          "ip_address": { "type": "string" },
+          "cluster_id": { "type": "string" },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "hostname", "role", "availability", "status"]
+      },
+      "Cluster": {
+        "type": "object",
+        "description": "Docker Swarm cluster",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "swarm_id": { "type": "string" },
+          "manager_count": { "type": "integer" },
+          "worker_count": { "type": "integer" },
+          "node_count": { "type": "integer" },
+          "status": { "type": "string", "enum": ["healthy", "degraded", "unreachable"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "status"]
+      },
+      "Alert": {
+        "type": "object",
+        "description": "Prometheus Alertmanager alert surfaced through DCMS API",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "description": "Alert rule name, e.g. HostCpuHigh" },
+          "severity": { "type": "string", "enum": ["critical", "warning", "info"] },
+          "status": { "type": "string", "enum": ["firing", "resolved", "pending", "silenced"] },
+          "summary": { "type": "string" },
+          "description": { "type": "string" },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "annotations": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "started_at": { "type": "string", "format": "date-time" },
+          "resolved_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "severity", "status", "started_at"]
+      },
+      "LogEntry": {
+        "type": "object",
+        "description": "Single log line from aggregated container logs",
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "container_id": { "type": "string" },
+          "container_name": { "type": "string" },
+          "host_id": { "type": "string" },
+          "stream": { "type": "string", "enum": ["stdout", "stderr"] },
+          "level": {
+            "type": "string",
+            "description": "Parsed log level if present in message",
+            "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "UNKNOWN"]
+          },
+          "message": { "type": "string" },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "required": ["timestamp", "container_id", "message"]
+      },
+      "User": {
+        "type": "object",
+        "description": "DCMS platform user",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string" },
+          "role": { "$ref": "#/components/schemas/UserRole" },
+          "org_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["active", "pending", "disabled"] },
+          "last_login_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "email", "role", "org_id", "status"]
+      },
+      "UserRole": {
+        "type": "string",
+        "description": "RBAC role within DCMS",
+        "enum": ["admin", "operator", "viewer", "auditor"],
+        "x-enum-descriptions": {
+          "admin": "Full platform access including user management",
+          "operator": "Can manage containers, images, networks, volumes",
+          "viewer": "Read-only access to all resources",
+          "auditor": "Read-only access to audit logs and security events only"
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Standard error envelope returned for all 4xx and 5xx responses",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "string", "description": "Machine-readable error code", "example": "CONTAINER_NOT_FOUND" },
+          "message": { "type": "string", "description": "Human-readable error description" },
+          "details": {
+            "type": "array",
+            "description": "Field-level validation errors",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": { "type": "string" },
+                "issue": { "type": "string" }
+              }
+            }
+          },
+          "trace_id": { "type": "string", "description": "Distributed trace ID for log correlation" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginatedResponse": {
+        "type": "object",
+        "description": "Pagination envelope — concrete responses extend this with a typed `data` array",
+        "properties": {
+          "page": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "total": { "type": "integer", "description": "Total number of matching items" },
+          "total_pages": { "type": "integer" },
+          "has_next": { "type": "boolean" },
+          "has_prev": { "type": "boolean" }
+        },
+        "required": ["page", "limit", "total", "total_pages"]
+      }
+    }
+  }
+}

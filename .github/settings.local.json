@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /c/Python*)",
+      "Read(//c/Users/dharmendra.sehgal/AppData/Local/Programs/**)"
+    ]
+  }
+}

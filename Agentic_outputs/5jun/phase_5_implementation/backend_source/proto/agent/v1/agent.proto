@@ -1,0 +1,213 @@
+// Proto definition for the DCMS per-host agent gRPC service.
+// Regenerate Go stubs with: buf generate  (see proto/buf.gen.yaml)
+
+syntax = "proto3";
+
+package dcms.agent.v1;
+
+option go_package = "github.com/dcms/dcms/proto/agent/v1;agentv1";
+
+// ============================================================
+// Service definition
+// ============================================================
+
+// AgentService is hosted by the lightweight agent process running on each
+// managed Docker host. The DCMS control plane (container-service,
+// cluster-service, monitor-service) communicates with it over mTLS gRPC.
+service AgentService {
+
+  // Container lifecycle RPCs
+
+  // StartContainer starts an existing container or creates-then-starts a new one.
+  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
+
+  // StopContainer sends a SIGTERM (then SIGKILL after timeout) to a container.
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+
+  // PauseContainer suspends all processes in the container.
+  rpc PauseContainer(PauseContainerRequest) returns (PauseContainerResponse);
+
+  // RestartContainer performs a stop+start cycle.
+  rpc RestartContainer(RestartContainerRequest) returns (RestartContainerResponse);
+
+  // Observability RPCs
+
+  // GetContainerStats returns a single resource-usage snapshot for a container.
+  // For a continuous feed, poll this RPC or use StreamContainerLogs side-channel.
+  rpc GetContainerStats(GetContainerStatsRequest) returns (ContainerStats);
+
+  // StreamContainerLogs is a server-streaming RPC that tails container log output.
+  // The stream is held open until the client cancels the context.
+  rpc StreamContainerLogs(StreamLogsRequest) returns (stream LogChunk);
+
+  // Inventory RPCs
+
+  // ListContainers returns all containers visible on this host, with optional filtering.
+  rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
+
+  // Management RPCs
+
+  // Heartbeat is called periodically by the cluster-service to verify agent
+  // reachability and collect host metadata.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// ============================================================
+// StartContainer
+// ============================================================
+
+message StartContainerRequest {
+  // container_id must be set when starting an already-created container.
+  // When empty, a new container is created using the remaining fields.
+  string container_id = 1;
+
+  // Fields used for container creation (ignored when container_id is set).
+  string name           = 2;
+  string image          = 3;
+  repeated string env   = 4; // KEY=VALUE pairs
+  repeated string command = 5;
+  string restart_policy = 6; // no | always | on-failure | unless-stopped
+
+  // Resource limits applied to the new container.
+  int64 cpu_quota_us  = 7;  // microseconds per cpu_period (100000)
+  int64 memory_bytes  = 8;  // hard memory limit
+}
+
+message StartContainerResponse {
+  string container_id = 1;
+  string status       = 2; // "running"
+}
+
+// ============================================================
+// StopContainer
+// ============================================================
+
+message StopContainerRequest {
+  string container_id     = 1;
+  int32  timeout_seconds  = 2; // SIGKILL is sent after this many seconds; default 10
+}
+
+message StopContainerResponse {
+  string container_id = 1;
+  string status       = 2; // "stopped"
+}
+
+// ============================================================
+// PauseContainer
+// ============================================================
+
+message PauseContainerRequest {
+  string container_id = 1;
+}
+
+message PauseContainerResponse {
+  string container_id = 1;
+  string status       = 2; // "paused"
+}
+
+// ============================================================
+// RestartContainer
+// ============================================================
+
+message RestartContainerRequest {
+  string container_id    = 1;
+  int32 timeout_seconds  = 2; // grace period before SIGKILL; default 10
+}
+
+message RestartContainerResponse {
+  string container_id = 1;
+  string status       = 2; // "running"
+}
+
+// ============================================================
+// GetContainerStats
+// ============================================================
+
+message GetContainerStatsRequest {
+  string container_id = 1;
+}
+
+// ContainerStats carries a resource-usage snapshot for a single container.
+// Numeric values are encoded as strings to avoid floating-point precision loss
+// across language boundaries; consumers should parse with strconv.ParseFloat.
+message ContainerStats {
+  string container_id  = 1;
+  string cpu_percent   = 2; // e.g. "12.34"
+  string mem_usage_mb  = 3;
+  string mem_limit_mb  = 4;
+  uint64 net_rx_bytes  = 5;
+  uint64 net_tx_bytes  = 6;
+  uint64 block_read    = 7;
+  uint64 block_write   = 8;
+  string timestamp     = 9; // RFC3339
+}
+
+// ============================================================
+// StreamContainerLogs
+// ============================================================
+
+message StreamLogsRequest {
+  string container_id = 1;
+  int64  tail_lines   = 2; // number of historical lines to replay before tailing; 0 = 100
+  bool   timestamps   = 3; // prepend Docker log timestamps
+  bool   follow       = 4; // always true for streaming; reserved for REST compat
+}
+
+// LogChunk carries a single log line from stdout or stderr.
+message LogChunk {
+  string container_id = 1;
+  string line         = 2;
+  string stream       = 3; // "stdout" or "stderr"
+  string timestamp    = 4; // RFC3339Nano
+}
+
+// ============================================================
+// ListContainers
+// ============================================================
+
+message ListContainersRequest {
+  bool            all           = 1; // include stopped containers
+  repeated string status_filter = 2; // e.g. ["running", "exited"]
+  string          name_filter   = 3; // substring match on container name
+}
+
+message ListContainersResponse {
+  repeated ContainerListItem containers = 1;
+}
+
+message ContainerListItem {
+  string container_id = 1;
+  string name         = 2;
+  string image        = 3;
+  string status       = 4; // human-readable status string from Docker
+  string state        = 5; // "running" | "exited" | "paused" | "created" | "restarting"
+  int64  created      = 6; // Unix timestamp (seconds)
+}
+
+// ============================================================
+// Heartbeat
+// ============================================================
+
+message HeartbeatRequest {
+  string agent_id   = 1; // unique ID of the agent (set at agent startup)
+  string host_addr  = 2; // advertised gRPC address of this agent
+  HostInfo host_info = 3;
+}
+
+message HeartbeatResponse {
+  string agent_id  = 1;
+  string timestamp = 2; // RFC3339 server-side time
+  string status    = 3; // "ok" | "degraded"
+}
+
+// HostInfo carries system-level resource metrics reported with each heartbeat.
+message HostInfo {
+  int32  cpu_count       = 1;
+  double cpu_percent     = 2;  // 0.0 – 100.0
+  uint64 mem_total_mb    = 3;
+  uint64 mem_available_mb = 4;
+  uint64 disk_total_gb   = 5;
+  uint64 disk_free_gb    = 6;
+  string os_version      = 7;
+  string docker_version  = 8;
+}

@@ -1,0 +1,936 @@
+# =============================================================================
+# DCMS Docker Compose — Development Environment
+# Document: CICD-IMPL-DCMS-001 / Containerization
+# Version:  1.0.0
+# Date:     2026-06-06
+#
+# Usage:
+#   cp environment_configs/dev.env .env
+#   docker compose up
+#   docker compose --profile observe up    # + Prometheus / Grafana / Loki / Jaeger
+#   docker compose down --volumes          # full teardown including data volumes
+#
+# Profiles:
+#   (default)  — all DCMS services + postgres + redis + kong + mailhog
+#   observe    — + prometheus + grafana + loki + jaeger
+#
+# Port summary (host-mapped):
+#   3000  — frontend (Nginx / Vite dev server)
+#   8080  — Kong API gateway (HTTP)
+#   8443  — Kong API gateway (HTTPS)
+#   3001  — Grafana
+#   9090  — Prometheus
+#   16686 — Jaeger UI
+#   8025  — Mailhog web UI
+#   1025  — Mailhog SMTP
+#   5432  — PostgreSQL (host access for psql / migrations)
+#   6379  — Redis (host access for redis-cli)
+# =============================================================================
+
+version: "3.8"
+
+# =============================================================================
+# Named volumes — persisted across container restarts.
+# Run `docker compose down --volumes` to wipe all data.
+# =============================================================================
+volumes:
+  # Stateful service data
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  # Observability stack data
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  loki-data:
+    driver: local
+  jaeger-data:
+    driver: local
+  # Kong declarative config (read-only bind in service definition)
+  kong-config:
+    driver: local
+
+# =============================================================================
+# Networks
+# dcms-backend  — internal service mesh; NOT exposed to the host network
+# dcms-frontend — web-facing tier: frontend, Kong, observability UIs
+# =============================================================================
+networks:
+  dcms-backend:
+    driver: bridge
+    internal: true              # containers cannot reach the internet directly
+    ipam:
+      config:
+        - subnet: 172.28.0.0/20
+
+  dcms-frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure: PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16.3-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+      # Enable connection logging for development debugging.
+      POSTGRES_OPTIONS: "-c log_connections=on -c log_statement=all -c log_min_duration_statement=100"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Init scripts run once on first container creation (alphabetical order).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dcms} -d ${POSTGRES_DB:-dcms_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure: Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2.5-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+        --requirepass ${REDIS_PASSWORD:-}
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --save 900 1
+        --save 300 10
+        --save 60 10000
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: >
+        ["CMD-SHELL",
+         "redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure: Kong API Gateway (DB-less, declarative config)
+  # ---------------------------------------------------------------------------
+  kong:
+    image: kong:3.7.1-ubuntu
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+      KONG_SSL_CERT: /etc/kong/ssl/server.crt
+      KONG_SSL_CERT_KEY: /etc/kong/ssl/server.key
+      KONG_PLUGINS: bundled
+      KONG_LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Enable Prometheus metrics endpoint at :8001/metrics
+      KONG_STATUS_LISTEN: "0.0.0.0:8100"
+    volumes:
+      # Declarative config file (DB-less mode): defines services, routes, plugins.
+      - ./config/kong/kong.yml:/etc/kong/kong.yml:ro
+      # Self-signed dev TLS cert (generated by mkcert or provided by dev setup).
+      - ./config/kong/ssl:/etc/kong/ssl:ro
+    ports:
+      - "8080:8000"    # Kong HTTP proxy
+      - "8443:8443"    # Kong HTTPS proxy
+      - "8001:8001"    # Kong admin API (dev only — NOT exposed in production)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+      - dcms-frontend
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: auth-service (port 8081)
+  # ---------------------------------------------------------------------------
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: auth-service
+        GO_VERSION: "1.22"
+        PORT: "8081"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/auth-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: auth-service
+      PORT: "8081"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_AUTH_DB:-0}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRY: ${JWT_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      OIDC_PROVIDER_URL: ${OIDC_PROVIDER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      MFA_ISSUER: ${MFA_ISSUER:-DCMS-Dev}
+      ACCOUNT_LOCKOUT_ATTEMPTS: ${ACCOUNT_LOCKOUT_ATTEMPTS:-5}
+      ACCOUNT_LOCKOUT_WINDOW: ${ACCOUNT_LOCKOUT_WINDOW:-10m}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: auth-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: container-service (port 8082)
+  # ---------------------------------------------------------------------------
+  container-service:
+    build:
+      context: ./services/container-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: container-service
+        GO_VERSION: "1.22"
+        PORT: "8082"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/container-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: container-service
+      PORT: "8082"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      CLUSTER_SERVICE_URL: ${CLUSTER_SERVICE_URL:-http://cluster-service:8089}
+      IMAGE_SERVICE_URL: ${IMAGE_SERVICE_URL:-http://image-service:8083}
+      AGENT_GRPC_PORT: ${AGENT_GRPC_PORT:-9090}
+      AGENT_TLS_CERT_PATH: ${AGENT_TLS_CERT_PATH:-/certs/agent.crt}
+      AGENT_TLS_KEY_PATH: ${AGENT_TLS_KEY_PATH:-/certs/agent.key}
+      DCMS_CA_CERT_PATH: ${DCMS_CA_CERT_PATH:-/certs/ca.crt}
+      CONTAINER_EVENT_CHANNEL: ${CONTAINER_EVENT_CHANNEL:-dcms.container.events}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: container-service
+    volumes:
+      - ./certs:/certs:ro    # dev TLS certs for agent gRPC mTLS
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      cluster-service:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: image-service (port 8083)
+  # ---------------------------------------------------------------------------
+  image-service:
+    build:
+      context: ./services/image-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: image-service
+        GO_VERSION: "1.22"
+        PORT: "8083"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/image-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: image-service
+      PORT: "8083"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REGISTRY_CREDENTIALS_ENCRYPTION_KEY: ${REGISTRY_CREDENTIALS_ENCRYPTION_KEY:-dev-encryption-key-32-chars-minimum}
+      TRIVY_CACHE_DIR: /tmp/trivy-cache
+      SCAN_RESULT_TTL: ${SCAN_RESULT_TTL:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: image-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M    # Trivy scans are memory-intensive
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: network-service (port 8084)
+  # ---------------------------------------------------------------------------
+  network-service:
+    build:
+      context: ./services/network-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: network-service
+        GO_VERSION: "1.22"
+        PORT: "8084"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/network-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: network-service
+      PORT: "8084"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: network-service
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: volume-service (port 8085)
+  # ---------------------------------------------------------------------------
+  volume-service:
+    build:
+      context: ./services/volume-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: volume-service
+        GO_VERSION: "1.22"
+        PORT: "8085"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/volume-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: volume-service
+      PORT: "8085"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: volume-service
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: monitor-service (port 8086)
+  # ---------------------------------------------------------------------------
+  monitor-service:
+    build:
+      context: ./services/monitor-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: monitor-service
+        GO_VERSION: "1.22"
+        PORT: "8086"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/monitor-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: monitor-service
+      PORT: "8086"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      ALERT_CHANNEL: ${ALERT_CHANNEL:-dcms.alerts}
+      CONTAINER_CPU_ALERT_THRESHOLD: ${CONTAINER_CPU_ALERT_THRESHOLD:-80}
+      CONTAINER_MEMORY_ALERT_THRESHOLD: ${CONTAINER_MEMORY_ALERT_THRESHOLD:-90}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: monitor-service
+    profiles:
+      - observe
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: log-service (port 8087)
+  # ---------------------------------------------------------------------------
+  log-service:
+    build:
+      context: ./services/log-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: log-service
+        GO_VERSION: "1.22"
+        PORT: "8087"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/log-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: log-service
+      PORT: "8087"
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      LOKI_URL: ${LOKI_URL:-http://loki:3100}
+      LOG_BATCH_SIZE: ${LOG_BATCH_SIZE:-1000}
+      LOG_BATCH_INTERVAL: ${LOG_BATCH_INTERVAL:-1s}
+      LOG_LOCAL_BUFFER_HOURS: ${LOG_LOCAL_BUFFER_HOURS:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: log-service
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: cluster-service (port 8089)
+  # ---------------------------------------------------------------------------
+  cluster-service:
+    build:
+      context: ./services/cluster-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: cluster-service
+        GO_VERSION: "1.22"
+        PORT: "8089"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/cluster-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: cluster-service
+      PORT: "8089"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      SWARM_MANAGER_URL: ${SWARM_MANAGER_URL:-}
+      AGENT_HEARTBEAT_INTERVAL: ${AGENT_HEARTBEAT_INTERVAL:-30s}
+      AGENT_HEARTBEAT_TIMEOUT: ${AGENT_HEARTBEAT_TIMEOUT:-45s}
+      NODE_STATUS_CACHE_TTL: ${NODE_STATUS_CACHE_TTL:-30s}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: cluster-service
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8089/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: notification-service (port 8088)
+  # ---------------------------------------------------------------------------
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: notification-service
+        GO_VERSION: "1.22"
+        PORT: "8088"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/notification-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: notification-service
+      PORT: "8088"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-dcms_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dcms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_dev_only}
+      POSTGRES_SSL_MODE: ${POSTGRES_SSL_MODE:-disable}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      ALERT_CHANNEL: ${ALERT_CHANNEL:-dcms.alerts}
+      SMTP_HOST: ${SMTP_HOST:-mailhog}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-dcms-noreply@localhost}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS: ${SMTP_TLS:-false}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      NOTIFICATION_DEDUP_TTL: ${NOTIFICATION_DEDUP_TTL:-5m}
+      NOTIFICATION_RETRY_MAX: ${NOTIFICATION_RETRY_MAX:-5}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      OTEL_SERVICE_NAME: notification-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # DCMS Go Service: agent (gRPC port 9090)
+  # Runs on the same host as the Docker daemon it manages.
+  # In dev, this runs alongside the compose stack and manages local Docker.
+  # ---------------------------------------------------------------------------
+  agent:
+    build:
+      context: ./services/agent
+      dockerfile: ../../containerization/Dockerfile.services
+      args:
+        SERVICE_NAME: agent
+        GO_VERSION: "1.22"
+        PORT: "9090"
+        VERSION: dev
+        COMMIT: local
+    image: ${IMAGE_PREFIX:-dcms}/agent:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: agent
+      AGENT_GRPC_PORT: ${AGENT_GRPC_PORT:-9090}
+      AGENT_TLS_CERT_PATH: ${AGENT_TLS_CERT_PATH:-/certs/agent.crt}
+      AGENT_TLS_KEY_PATH: ${AGENT_TLS_KEY_PATH:-/certs/agent.key}
+      DCMS_CA_CERT_PATH: ${DCMS_CA_CERT_PATH:-/certs/ca.crt}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      CLUSTER_SERVICE_URL: ${CLUSTER_SERVICE_URL:-http://cluster-service:8089}
+      LOG_SERVICE_URL: ${LOG_SERVICE_URL:-http://log-service:8087}
+      AGENT_HEARTBEAT_INTERVAL: ${AGENT_HEARTBEAT_INTERVAL:-30s}
+      AGENT_LOG_BUFFER_HOURS: ${AGENT_LOG_BUFFER_HOURS:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/certs:ro
+    depends_on:
+      cluster-service:
+        condition: service_healthy
+      log-service:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+    healthcheck:
+      # Agent exposes gRPC health check; for compose we use the HTTP sidecar port.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # Frontend: React SPA served by Nginx (dev uses Vite dev server via override)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: "20"
+        VERSION: dev
+    image: ${IMAGE_PREFIX:-dcms}/frontend:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      NGINX_PORT: "80"
+      API_GATEWAY_URL: http://kong:8000
+      # Injected at build time via Vite env substitution:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+      VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-/events}
+    ports:
+      - "3000:80"
+    depends_on:
+      kong:
+        condition: service_healthy
+    networks:
+      - dcms-frontend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  # ---------------------------------------------------------------------------
+  # Observability: Prometheus
+  # Profile: observe (not started by default — use --profile observe)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+      - "--log.level=${LOG_LEVEL:-info}"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - ./config/prometheus/targets:/etc/prometheus/targets:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - dcms-backend
+      - dcms-frontend
+    profiles:
+      - observe
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
+  # Observability: Grafana
+  # Profile: observe
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_INSTALL_PLUGINS: ""
+      GF_LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Datasource provisioning via config file
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"    # 3001 on host to avoid conflict with frontend on 3000
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - dcms-backend
+      - dcms-frontend
+    profiles:
+      - observe
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # Observability: Loki (log aggregation backend)
+  # Profile: observe
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.1.0
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - loki-data:/loki
+      - ./config/loki/loki.yml:/etc/loki/loki.yml:ro
+    ports:
+      - "3100:3100"
+    networks:
+      - dcms-backend
+    profiles:
+      - observe
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # Observability: Jaeger (distributed tracing — all-in-one dev image)
+  # Profile: observe
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.58.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - jaeger-data:/badger
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "4317:4317"      # OTLP gRPC receiver
+      - "4318:4318"      # OTLP HTTP receiver
+      - "14268:14268"    # Jaeger thrift HTTP (legacy)
+    networks:
+      - dcms-backend
+      - dcms-frontend
+    profiles:
+      - observe
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:14269/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # Dev SMTP: Mailhog (catches all outbound email in development)
+  # ---------------------------------------------------------------------------
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    restart: unless-stopped
+    environment:
+      MH_STORAGE: memory
+      MH_API_BIND_ADDR: 0.0.0.0:8025
+      MH_UI_BIND_ADDR: 0.0.0.0:8025
+      MH_SMTP_BIND_ADDR: 0.0.0.0:1025
+    ports:
+      - "8025:8025"    # Mailhog web UI
+      - "1025:1025"    # SMTP (dev services send email here)
+    networks:
+      - dcms-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v2/messages || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 64M

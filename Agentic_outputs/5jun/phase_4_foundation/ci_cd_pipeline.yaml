@@ -1,0 +1,916 @@
+# =============================================================================
+# DCMS CI/CD Pipeline — GitHub Actions
+# Document: CICD-IMPL-DCMS-001
+# Version:   1.0.0
+# Date:      2026-06-06
+# Aligns with: CICD-ARCH-DCMS-001 (ci_cd_architecture.md)
+# =============================================================================
+#
+# Workflow order:
+#   lint-and-test  →  build-images  →  security-scan
+#                                           │ (main branch only)
+#                                           ▼
+#                                    integration-tests
+#                                           │
+#                                           ▼
+#                                    deploy-staging
+#                                           │
+#                                    (manual approval)
+#                                           ▼
+#                                     deploy-prod
+# =============================================================================
+
+name: DCMS CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+# Cancel in-progress runs for the same PR to avoid wasted runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Minimal default permissions; individual jobs escalate as needed.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/dcms
+  GO_VERSION: "1.22"
+  NODE_VERSION: "20"
+  COVERAGE_THRESHOLD: "80"
+
+# =============================================================================
+# JOB 1 — lint-and-test
+# Runs on every PR and on every push to main / release/**
+# =============================================================================
+jobs:
+  lint-and-test:
+    name: Lint and Test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write          # allows test reporter to post check runs
+
+    steps:
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history needed for gitleaks pre-check
+
+      # -----------------------------------------------------------------------
+      # Go toolchain
+      # -----------------------------------------------------------------------
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # -----------------------------------------------------------------------
+      # Go lint
+      # -----------------------------------------------------------------------
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59.1
+          args: --config .golangci.yml --timeout 5m
+          only-new-issues: false
+
+      # -----------------------------------------------------------------------
+      # Go unit tests with race detector and coverage
+      # -----------------------------------------------------------------------
+      - name: Run Go unit tests
+        run: |
+          go test \
+            ./... \
+            -race \
+            -count=1 \
+            -timeout 10m \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -v 2>&1 | tee test-output.txt
+        env:
+          GOFLAGS: -mod=readonly
+
+      - name: Enforce Go coverage gate (>= ${{ env.COVERAGE_THRESHOLD }}%)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out \
+            | grep total \
+            | awk '{print $3}' \
+            | tr -d '%')
+          echo "Total Go coverage: ${COVERAGE}%"
+          if (( $(echo "${COVERAGE} < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+            echo "FAIL: Go coverage ${COVERAGE}% is below threshold ${{ env.COVERAGE_THRESHOLD }}%"
+            exit 1
+          fi
+          echo "PASS: Go coverage ${COVERAGE}% meets threshold"
+
+      - name: Convert Go test output to JUnit XML
+        if: always()
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          go-junit-report -in test-output.txt -out go-test-results.xml
+
+      - name: Upload Go test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-results
+          path: go-test-results.xml
+          retention-days: 14
+
+      - name: Upload Go coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.out
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # Node / frontend toolchain
+      # -----------------------------------------------------------------------
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --prefer-offline
+
+      - name: Run ESLint
+        working-directory: frontend
+        run: npm run lint -- --max-warnings=0
+
+      - name: Run Prettier format check
+        working-directory: frontend
+        run: npm run format:check
+
+      - name: Run frontend unit tests (vitest with coverage)
+        working-directory: frontend
+        run: |
+          npm run test -- \
+            --coverage \
+            --coverage.reporter=text \
+            --coverage.reporter=json \
+            --reporter=junit \
+            --outputFile=../frontend-test-results.xml
+
+      - name: Enforce frontend coverage gate (>= ${{ env.COVERAGE_THRESHOLD }}%)
+        working-directory: frontend
+        run: |
+          COVERAGE=$(node -e "
+            const r = require('./coverage/coverage-summary.json');
+            console.log(r.total.statements.pct);
+          ")
+          echo "Frontend statement coverage: ${COVERAGE}%"
+          node -e "
+            const pct = parseFloat('${COVERAGE}');
+            const threshold = ${{ env.COVERAGE_THRESHOLD }};
+            if (pct < threshold) {
+              console.error('FAIL: Frontend coverage ' + pct + '% is below ' + threshold + '%');
+              process.exit(1);
+            }
+            console.log('PASS: Frontend coverage ' + pct + '% meets threshold');
+          "
+
+      - name: Upload frontend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-results
+          path: frontend-test-results.xml
+          retention-days: 14
+
+      - name: Upload frontend coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+          retention-days: 14
+
+# =============================================================================
+# JOB 2 — build-images
+# Builds Docker images for all 11 services using a matrix strategy.
+# On PRs: images are NOT pushed (build cache verified only).
+# On main / release: images ARE pushed to ghcr.io.
+# =============================================================================
+  build-images:
+    name: Build — ${{ matrix.service }}
+    needs: lint-and-test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write           # push to ghcr.io
+      id-token: write           # for cosign keyless signing (SLSA)
+
+    strategy:
+      fail-fast: false          # build all images; surface all failures at once
+      matrix:
+        include:
+          - service: auth-service
+            port: "8081"
+            context: ./services/auth-service
+          - service: container-service
+            port: "8082"
+            context: ./services/container-service
+          - service: image-service
+            port: "8083"
+            context: ./services/image-service
+          - service: network-service
+            port: "8084"
+            context: ./services/network-service
+          - service: volume-service
+            port: "8085"
+            context: ./services/volume-service
+          - service: monitor-service
+            port: "8086"
+            context: ./services/monitor-service
+          - service: log-service
+            port: "8087"
+            context: ./services/log-service
+          - service: cluster-service
+            port: "8089"
+            context: ./services/cluster-service
+          - service: notification-service
+            port: "8088"
+            context: ./services/notification-service
+          - service: agent
+            port: "9090"
+            context: ./services/agent
+          - service: frontend
+            port: "80"
+            context: ./frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx (BuildKit)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: |
+            image=moby/buildkit:v0.15.0
+            network=host
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata (tags and labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch,suffix=-latest
+          labels: |
+            org.opencontainers.image.title=DCMS ${{ matrix.service }}
+            org.opencontainers.image.description=Generic Docker Container Management System — ${{ matrix.service }}
+            org.opencontainers.image.vendor=DCMS Project
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            dcms.service=${{ matrix.service }}
+            dcms.port=${{ matrix.port }}
+
+      # Go services use Dockerfile.services; frontend uses its own Dockerfile.
+      - name: Build and conditionally push — ${{ matrix.service }}
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.service == 'frontend' && './frontend/Dockerfile' || './containerization/Dockerfile.services' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          provenance: true       # SLSA level 2 provenance attestation
+          sbom: true             # CycloneDX SBOM attached to image manifest
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:buildcache
+          cache-to: |
+            type=registry,ref=${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:buildcache,mode=max
+          build-args: |
+            SERVICE_NAME=${{ matrix.service }}
+            GO_VERSION=${{ env.GO_VERSION }}
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.pushed_at }}
+            PORT=${{ matrix.port }}
+
+      # Sign the image with cosign (keyless, GitHub OIDC) — push only.
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.2.4
+
+      - name: Sign image with cosign (keyless OIDC)
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}@${{ steps.build-push.outputs.digest }}
+
+      # Write digest to a file so security-scan can consume it.
+      - name: Export image digest
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ steps.build-push.outputs.digest }}" \
+            > /tmp/${{ matrix.service }}-digest.txt
+
+      - name: Upload image digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: /tmp/${{ matrix.service }}-digest.txt
+          retention-days: 1
+
+# =============================================================================
+# JOB 3 — security-scan
+# Trivy vulnerability scan on all pushed images.
+# CRITICAL CVEs cause exit-code 1 and block the pipeline.
+# =============================================================================
+  security-scan:
+    name: Security Scan — ${{ matrix.service }}
+    needs: build-images
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write    # upload SARIF to GitHub Security tab
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - auth-service
+          - container-service
+          - image-service
+          - network-service
+          - volume-service
+          - monitor-service
+          - log-service
+          - cluster-service
+          - notification-service
+          - agent
+          - frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image digest for ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: /tmp/
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # On PRs, scan the locally built image tar (from build job cache).
+      # On push, scan the pushed image by digest.
+      - name: Determine image reference
+        id: image-ref
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:sha-$(echo ${{ github.sha }} | head -c7)" \
+              >> $GITHUB_OUTPUT
+          else
+            DIGEST=$(cat /tmp/${{ matrix.service }}-digest.txt)
+            echo "ref=${{ env.IMAGE_PREFIX }}-${{ matrix.service }}@${DIGEST}" \
+              >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Trivy vulnerability scan — ${{ matrix.service }}
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.image-ref.outputs.ref }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"          # fail build on CRITICAL findings
+          ignore-unfixed: false
+          vuln-type: os,library
+          timeout: 10m
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()             # upload even when scan found issues (exit-code 1)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+      - name: Upload Trivy SARIF as build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-${{ matrix.service }}
+          path: trivy-${{ matrix.service }}.sarif
+          retention-days: 30
+
+# =============================================================================
+# JOB 4 — integration-tests
+# Runs only on the main branch and release/** after security scans pass.
+# Spins up a docker-compose test stack, runs Go integration tests and
+# Playwright E2E smoke tests, then tears everything down.
+# =============================================================================
+  integration-tests:
+    name: Integration Tests
+    needs: security-scan
+    runs-on: ubuntu-24.04
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      API_BASE_URL: http://localhost:8080
+      INTEGRATION_TIMEOUT: 15m
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write integration test environment file
+        run: |
+          cat > .env.test <<'EOF'
+          POSTGRES_HOST=postgres
+          POSTGRES_PORT=5432
+          POSTGRES_DB=dcms_test
+          POSTGRES_USER=dcms
+          POSTGRES_PASSWORD=test-only-password
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          REDIS_PASSWORD=
+          JWT_SECRET=integration-test-jwt-secret-minimum-32-chars
+          JWT_EXPIRY=15m
+          JWT_REFRESH_EXPIRY=7d
+          LOG_LEVEL=info
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+          OTEL_SERVICE_NAME=dcms-integration
+          ENABLE_KUBERNETES_SUPPORT=false
+          ENABLE_SSO=false
+          AUTH_SERVICE_URL=http://auth-service:8081
+          CONTAINER_SERVICE_URL=http://container-service:8082
+          IMAGE_SERVICE_URL=http://image-service:8083
+          NETWORK_SERVICE_URL=http://network-service:8084
+          VOLUME_SERVICE_URL=http://volume-service:8085
+          MONITOR_SERVICE_URL=http://monitor-service:8086
+          LOG_SERVICE_URL=http://log-service:8087
+          CLUSTER_SERVICE_URL=http://cluster-service:8089
+          NOTIFICATION_SERVICE_URL=http://notification-service:8088
+          EOF
+
+      - name: Start integration test docker-compose stack
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.test.yml \
+            --env-file .env.test \
+            up \
+            --detach \
+            --wait \
+            --wait-timeout 120
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+
+      - name: Wait for all services to be healthy
+        run: |
+          echo "Waiting for API gateway to become healthy..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "API gateway healthy after ${i} attempts"
+              break
+            fi
+            echo "Attempt ${i}/30: API gateway not ready, waiting 5s..."
+            sleep 5
+          done
+          curl -sf http://localhost:8080/health || { echo "API gateway failed health check"; exit 1; }
+
+      - name: Run Go integration tests
+        run: |
+          go test \
+            -tags=integration \
+            ./integration/... \
+            -v \
+            -timeout ${{ env.INTEGRATION_TIMEOUT }} \
+            -coverprofile=integration-coverage.out \
+            2>&1 | tee integration-test-output.txt
+        env:
+          API_BASE_URL: ${{ env.API_BASE_URL }}
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5433"    # host-mapped port for integration runner
+          REDIS_HOST: localhost
+          REDIS_PORT: "6380"
+
+      - name: Convert Go integration test output to JUnit XML
+        if: always()
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          go-junit-report \
+            -in integration-test-output.txt \
+            -out integration-test-results.xml
+
+      - name: Install Playwright dependencies
+        working-directory: frontend
+        run: |
+          npm ci --prefer-offline
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E smoke tests
+        working-directory: frontend
+        run: |
+          npx playwright test \
+            --config=playwright.config.ts \
+            --reporter=junit \
+            --output-file=../playwright-results.xml
+        env:
+          BASE_URL: http://localhost:3000
+          CI: "true"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: |
+            integration-test-results.xml
+            playwright-results.xml
+            integration-coverage.out
+          retention-days: 30
+
+      - name: Upload Playwright trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: frontend/test-results/
+          retention-days: 7
+
+      - name: Tear down integration test stack
+        if: always()           # always clean up, even on test failure
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.test.yml \
+            down \
+            --volumes \
+            --remove-orphans
+
+# =============================================================================
+# JOB 5 — deploy-staging
+# Deploys to Docker Swarm staging cluster.
+# Runs on the self-hosted runner co-located with the staging Swarm manager.
+# =============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: integration-tests
+    runs-on:
+      - self-hosted
+      - swarm-manager
+      - staging
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    environment:
+      name: staging
+      url: https://staging.dcms.internal
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      STACK_NAME: dcms-staging
+      STACK_FILE: stacks/stack-staging.yml
+      IMAGE_TAG: sha-${{ github.sha }}
+      DEPLOY_TIMEOUT: "300"    # seconds to wait for Swarm convergence
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry (on runner node)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io \
+              --username ${{ github.actor }} \
+              --password-stdin
+
+      - name: Verify image signatures with cosign
+        run: |
+          SERVICES=(
+            auth-service container-service image-service network-service
+            volume-service monitor-service log-service cluster-service
+            notification-service agent frontend
+          )
+          for svc in "${SERVICES[@]}"; do
+            IMAGE="${{ env.IMAGE_PREFIX }}-${svc}:${{ env.IMAGE_TAG }}"
+            echo "Verifying signature for ${IMAGE}..."
+            cosign verify \
+              --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "${IMAGE}" || { echo "Signature verification failed for ${IMAGE}"; exit 1; }
+          done
+          echo "All image signatures verified."
+
+      - name: Render stack file with current image tag
+        run: |
+          IMAGE_PREFIX="${{ env.IMAGE_PREFIX }}" \
+          IMAGE_TAG="${{ env.IMAGE_TAG }}" \
+          DEPLOY_ENV="staging" \
+          envsubst < ${{ env.STACK_FILE }} > /tmp/stack-rendered.yml
+          echo "Rendered stack file:"
+          cat /tmp/stack-rendered.yml
+
+      - name: Deploy stack to staging Swarm
+        run: |
+          docker stack deploy \
+            --with-registry-auth \
+            --resolve-image always \
+            --compose-file /tmp/stack-rendered.yml \
+            ${{ env.STACK_NAME }}
+
+      - name: Wait for all Swarm services to converge
+        run: |
+          chmod +x scripts/wait-stack-healthy.sh
+          scripts/wait-stack-healthy.sh \
+            ${{ env.STACK_NAME }} \
+            ${{ env.DEPLOY_TIMEOUT }}
+
+      - name: Run post-deploy smoke test suite
+        run: |
+          go test \
+            -tags=smoke \
+            ./integration/smoke/... \
+            -v \
+            -timeout 5m \
+            -run TestSmoke
+        env:
+          API_BASE_URL: https://staging.dcms.internal
+          SMOKE_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
+
+      - name: Tag deployment in git
+        run: |
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          git config user.email "ci@dcms.internal"
+          git config user.name "DCMS CI"
+          git tag "deploy/staging-${TIMESTAMP}" ${{ github.sha }}
+          git push origin "deploy/staging-${TIMESTAMP}" || true
+
+      - name: Post staging deployment summary to Slack
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          COLOR=$([ "${STATUS}" = "success" ] && echo "good" || echo "danger")
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"${COLOR}\",
+                \"title\": \"DCMS Staging Deployment ${STATUS}\",
+                \"fields\": [
+                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Run\", \"value\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>\", \"short\": false}
+                ]
+              }]
+            }"
+
+# =============================================================================
+# JOB 6 — deploy-prod
+# Manual approval gate enforced by GitHub Environment protection rules.
+# Deploys to production Docker Swarm with rolling update strategy.
+# =============================================================================
+  deploy-prod:
+    name: Deploy to Production
+    needs: deploy-staging
+    runs-on:
+      - self-hosted
+      - swarm-manager
+      - prod
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    # The "production" GitHub Environment must have:
+    #   - Required reviewers: release-manager team
+    #   - Wait timer: 0 minutes (soak period enforced by staging job)
+    #   - Deployment branches: main, release/**
+    environment:
+      name: production
+      url: https://dcms.example.com
+    permissions:
+      contents: write    # for git tag push
+      packages: read
+
+    env:
+      STACK_NAME: dcms-prod
+      STACK_FILE: stacks/stack-prod.yml
+      IMAGE_TAG: sha-${{ github.sha }}
+      DEPLOY_TIMEOUT: "600"    # 10 minutes for prod convergence
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry (on runner node)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io \
+              --username ${{ github.actor }} \
+              --password-stdin
+
+      - name: Verify image signatures with cosign
+        run: |
+          SERVICES=(
+            auth-service container-service image-service network-service
+            volume-service monitor-service log-service cluster-service
+            notification-service agent frontend
+          )
+          for svc in "${SERVICES[@]}"; do
+            IMAGE="${{ env.IMAGE_PREFIX }}-${svc}:${{ env.IMAGE_TAG }}"
+            echo "Verifying signature for ${IMAGE}..."
+            cosign verify \
+              --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "${IMAGE}" || { echo "Signature verification failed for ${IMAGE}"; exit 1; }
+          done
+          echo "All image signatures verified."
+
+      - name: Run database migrations before service update
+        run: |
+          chmod +x scripts/run-migration.sh
+          scripts/run-migration.sh ${{ env.STACK_NAME }}
+        env:
+          MIGRATION_TIMEOUT: "120"
+
+      - name: Render production stack file with current image tag
+        run: |
+          IMAGE_PREFIX="${{ env.IMAGE_PREFIX }}" \
+          IMAGE_TAG="${{ env.IMAGE_TAG }}" \
+          DEPLOY_ENV="prod" \
+          envsubst < ${{ env.STACK_FILE }} > /tmp/stack-prod-rendered.yml
+
+      - name: Deploy stack to production Swarm (rolling update)
+        run: |
+          docker stack deploy \
+            --with-registry-auth \
+            --resolve-image always \
+            --compose-file /tmp/stack-prod-rendered.yml \
+            ${{ env.STACK_NAME }}
+
+      - name: Wait for all production Swarm services to converge
+        run: |
+          chmod +x scripts/wait-stack-healthy.sh
+          scripts/wait-stack-healthy.sh \
+            ${{ env.STACK_NAME }} \
+            ${{ env.DEPLOY_TIMEOUT }}
+
+      - name: Run post-deploy production health verification
+        run: |
+          go test \
+            -tags=smoke \
+            ./integration/smoke/... \
+            -v \
+            -timeout 5m \
+            -run TestSmoke
+        env:
+          API_BASE_URL: https://dcms.example.com
+          SMOKE_API_KEY: ${{ secrets.PROD_SMOKE_API_KEY }}
+
+      - name: Tag deployed commit in git
+        run: |
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          git config user.email "ci@dcms.internal"
+          git config user.name "DCMS CI"
+          git tag "deploy/prod-${TIMESTAMP}" ${{ github.sha }}
+          git push origin "deploy/prod-${TIMESTAMP}"
+
+      - name: Promote image tags from sha to semver (on tag push)
+        if: github.ref_type == 'tag'
+        run: |
+          SEMVER="${{ github.ref_name }}"
+          SEMVER="${SEMVER#v}"
+          SERVICES=(
+            auth-service container-service image-service network-service
+            volume-service monitor-service log-service cluster-service
+            notification-service agent frontend
+          )
+          # Install crane for registry-side retag (no repull)
+          curl -sL https://github.com/google/go-containerregistry/releases/download/v0.19.1/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar xz -C /usr/local/bin crane
+          for svc in "${SERVICES[@]}"; do
+            SRC="${{ env.IMAGE_PREFIX }}-${svc}:${{ env.IMAGE_TAG }}"
+            crane tag "${SRC}" "${SEMVER}"
+            crane tag "${SRC}" latest
+            echo "Tagged ${svc} as ${SEMVER} and latest"
+          done
+
+      - name: Notify Slack on production deployment result
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          EMOJI=$([ "${STATUS}" = "success" ] && echo ":white_check_mark:" || echo ":x:")
+          COLOR=$([ "${STATUS}" = "success" ] && echo "good" || echo "danger")
+          SEMVER="${{ github.ref_type == 'tag' && github.ref_name || github.sha }}"
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"${COLOR}\",
+                \"title\": \"${EMOJI} DCMS Production Deployment ${STATUS}\",
+                \"fields\": [
+                  {\"title\": \"Version\", \"value\": \"${SEMVER}\", \"short\": true},
+                  {\"title\": \"Deployed By\", \"value\": \"${{ github.actor }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                  {\"title\": \"Environment\", \"value\": \"<https://dcms.example.com|production>\", \"short\": true},
+                  {\"title\": \"Workflow Run\", \"value\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>\", \"short\": false}
+                ],
+                \"footer\": \"DCMS CI | ${{ github.repository }}\",
+                \"ts\": $(date +%s)
+              }]
+            }"
+
+      - name: Create GitHub deployment record on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'production',
+              description: 'DCMS production deployment via CI/CD pipeline',
+              auto_merge: false,
+              required_contexts: [],
+              production_environment: true,
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: deployment.data.id,
+              state: 'success',
+              environment_url: 'https://dcms.example.com',
+              description: 'Deployment succeeded',
+              log_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+            });

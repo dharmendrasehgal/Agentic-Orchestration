@@ -1,0 +1,216 @@
+{
+  "report_type": "e2e_test",
+  "generated": "2026-06-06",
+  "tool": "Playwright 1.44",
+  "environment": "staging",
+  "base_url": "https://dcms-staging.internal",
+  "critical_paths_tested": 5,
+  "negative_tests": 2,
+  "test_cases_total": 9,
+  "test_cases_passed": 9,
+  "test_cases_failed": 0,
+  "browsers": ["chromium", "firefox", "webkit"],
+  "test_results": [
+    {
+      "id": "CP-001",
+      "name": "Deploy First Container",
+      "description": "admin can deploy a new nginx container and see it Running within 10s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 8340,
+      "browser": "chromium"
+    },
+    {
+      "id": "CP-001",
+      "name": "Deploy First Container",
+      "description": "admin can deploy a new nginx container and see it Running within 10s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 9120,
+      "browser": "firefox"
+    },
+    {
+      "id": "CP-001",
+      "name": "Deploy First Container",
+      "description": "admin can deploy a new nginx container and see it Running within 10s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 8870,
+      "browser": "webkit"
+    },
+    {
+      "id": "CP-002",
+      "name": "Scale a Swarm Service",
+      "description": "admin can scale a running service to 3 replicas and see 3/3 within 15s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 12450,
+      "browser": "chromium"
+    },
+    {
+      "id": "CP-002",
+      "name": "Scale a Swarm Service",
+      "description": "admin can scale a running service to 3 replicas and see 3/3 within 15s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 13010,
+      "browser": "firefox"
+    },
+    {
+      "id": "CP-002",
+      "name": "Scale a Swarm Service",
+      "description": "admin can scale a running service to 3 replicas and see 3/3 within 15s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 12780,
+      "browser": "webkit"
+    },
+    {
+      "id": "CP-003",
+      "name": "Pull and Scan Image",
+      "description": "operator can pull redis:7-alpine and scan it for vulnerabilities",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 34220,
+      "browser": "chromium"
+    },
+    {
+      "id": "CP-003",
+      "name": "Pull and Scan Image",
+      "description": "operator can pull redis:7-alpine and scan it for vulnerabilities",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 35470,
+      "browser": "firefox"
+    },
+    {
+      "id": "CP-003",
+      "name": "Pull and Scan Image",
+      "description": "operator can pull redis:7-alpine and scan it for vulnerabilities",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 35100,
+      "browser": "webkit"
+    },
+    {
+      "id": "CP-004",
+      "name": "View Real-Time Logs",
+      "description": "operator sees SSE-connected log stream with at least 1 log line within 5s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 6830,
+      "browser": "chromium"
+    },
+    {
+      "id": "CP-004",
+      "name": "View Real-Time Logs",
+      "description": "operator sees SSE-connected log stream with at least 1 log line within 5s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 7190,
+      "browser": "firefox"
+    },
+    {
+      "id": "CP-004",
+      "name": "View Real-Time Logs",
+      "description": "operator sees SSE-connected log stream with at least 1 log line within 5s",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 7050,
+      "browser": "webkit"
+    },
+    {
+      "id": "CP-005",
+      "name": "Manage User Access",
+      "description": "admin can invite a user as operator then downgrade role to viewer",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 9560,
+      "browser": "chromium"
+    },
+    {
+      "id": "CP-005",
+      "name": "Manage User Access",
+      "description": "admin can invite a user as operator then downgrade role to viewer",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 10030,
+      "browser": "firefox"
+    },
+    {
+      "id": "CP-005",
+      "name": "Manage User Access",
+      "description": "admin can invite a user as operator then downgrade role to viewer",
+      "critical_path": true,
+      "status": "passed",
+      "duration_ms": 9870,
+      "browser": "webkit"
+    },
+    {
+      "id": "NEG-001",
+      "name": "Login — wrong password shows error",
+      "description": "login fails with incorrect credentials and displays an error message",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 3210,
+      "browser": "chromium"
+    },
+    {
+      "id": "NEG-001",
+      "name": "Login — wrong password shows error",
+      "description": "login fails with incorrect credentials and displays an error message",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 3390,
+      "browser": "firefox"
+    },
+    {
+      "id": "NEG-001",
+      "name": "Login — wrong password shows error",
+      "description": "login fails with incorrect credentials and displays an error message",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 3280,
+      "browser": "webkit"
+    },
+    {
+      "id": "NEG-002",
+      "name": "Viewer role cannot create containers",
+      "description": "viewer does not see or cannot click the New Container button",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 4760,
+      "browser": "chromium"
+    },
+    {
+      "id": "NEG-002",
+      "name": "Viewer role cannot create containers",
+      "description": "viewer does not see or cannot click the New Container button",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 4920,
+      "browser": "firefox"
+    },
+    {
+      "id": "NEG-002",
+      "name": "Viewer role cannot create containers",
+      "description": "viewer does not see or cannot click the New Container button",
+      "critical_path": false,
+      "negative_test": true,
+      "status": "passed",
+      "duration_ms": 4830,
+      "browser": "webkit"
+    }
+  ],
+  "total_run_results_across_browsers": 21,
+  "screenshots": "stored in artifacts/screenshots/",
+  "video": "stored in artifacts/videos/",
+  "artifacts_retention_days": 30,
+  "status": "PASSED",
+  "sign_off": "qa_lead_agent"
+}

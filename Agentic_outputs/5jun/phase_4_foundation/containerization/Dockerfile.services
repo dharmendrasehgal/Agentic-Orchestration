@@ -1,0 +1,224 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# DCMS Go Services — Multi-Stage Dockerfile Template
+# Document: CICD-IMPL-DCMS-001 / Containerization
+# Version:  1.0.0
+# Date:     2026-06-06
+#
+# Usage (pass SERVICE_NAME ARG to select the service binary):
+#   docker build \
+#     --build-arg SERVICE_NAME=container-service \
+#     --build-arg PORT=8082 \
+#     -f containerization/Dockerfile.services \
+#     ./services/container-service
+#
+# All 10 Go services use this file as their Dockerfile.
+# Service-specific build context is the ./services/<name>/ directory.
+#
+# Stage overview:
+#   1. deps    — download Go modules (cached; busted only when go.mod/go.sum change)
+#   2. builder — compile the service binary with hardening flags
+#   3. scanner — CI-only stage: Trivy filesystem scan inside the build context
+#   4. final   — minimal distroless image; binary + CA certs only
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Build-time arguments
+# Default values are overridden by CI (docker/build-push-action build-args).
+# -----------------------------------------------------------------------------
+ARG SERVICE_NAME=container-service
+ARG GO_VERSION=1.22
+ARG ALPINE_VERSION=3.20
+ARG DISTROLESS_TAG=nonroot
+# Image digest pins are managed by Renovate (renovate.json -> dockerfile.pinDigests).
+# Replace the placeholders below with actual digests before first use:
+#   docker pull golang:1.22-alpine && docker inspect golang:1.22-alpine --format '{{index .RepoDigests 0}}'
+ARG GOLANG_DIGEST=sha256:0237e4b5a382c97b05561c0c225e42cd35d2abab20d0c03ebed55c4ad0a3c9a7
+ARG DISTROLESS_DIGEST=sha256:a5e36c2e65f0b0c677f01e9c1d2e68d04ea8b47df03ea63b17e3c6eb4a9e741f
+
+# Version metadata injected by CI.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG PORT=8080
+
+# =============================================================================
+# Stage 1: deps
+# Purpose: Download and cache Go module dependencies.
+# Cache is invalidated only when go.mod or go.sum change, not on source edits.
+# =============================================================================
+FROM golang:${GO_VERSION}-alpine@${GOLANG_DIGEST} AS deps
+
+# Install build tools needed for cgo-free cross compilation and module download.
+# ca-certificates: needed for go mod download over TLS.
+# git: needed by some go generate directives.
+RUN apk add --no-cache \
+    ca-certificates=20240705-r0 \
+    git=2.45.2-r0 \
+    tzdata=2024b-r0 \
+    && update-ca-certificates
+
+WORKDIR /build
+
+# Copy only the dependency manifest first so Docker layer cache is preserved
+# when only source files change.
+COPY go.mod go.sum ./
+
+# Download modules with BuildKit cache mounts so repeated builds don't
+# re-download. The /go/pkg/mod cache persists across daemon restarts in CI
+# when using the registry or gha cache backends.
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=shared \
+    --mount=type=cache,target=/go/pkg/mod,sharing=shared \
+    go mod download -x \
+    && go mod verify
+
+# =============================================================================
+# Stage 2: builder
+# Purpose: Compile the service binary with security hardening flags.
+# =============================================================================
+FROM deps AS builder
+
+ARG SERVICE_NAME
+ARG VERSION
+ARG COMMIT
+ARG BUILD_DATE
+ARG PORT
+
+# Set build environment for a fully static binary.
+# CGO_ENABLED=0  — no C library dependencies; produces a truly static binary
+# GOOS=linux     — explicit target OS
+# GOARCH=amd64   — explicit target architecture (v1; arm64 in v2)
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
+
+# Copy the full source tree for this service.
+COPY . .
+
+# Compile with:
+#   -s         strip symbol table  (reduces binary size ~30%)
+#   -w         strip DWARF debug info (reduces binary size ~10%)
+#   -X         inject build metadata into main package variables
+#   -trimpath  remove local file paths from the binary (reproducible builds)
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=shared \
+    --mount=type=cache,target=/go/pkg/mod,sharing=shared \
+    go build \
+      -ldflags="-s -w \
+        -X main.version=${VERSION} \
+        -X main.commit=${COMMIT} \
+        -X main.buildDate=${BUILD_DATE} \
+        -X main.serviceName=${SERVICE_NAME}" \
+      -trimpath \
+      -tags netgo,osusergo \
+      -o /bin/service \
+      ./cmd/${SERVICE_NAME}
+
+# Verify the binary is truly static (should print "not a dynamic executable").
+RUN file /bin/service | grep -v "dynamically linked" \
+    || (echo "ERROR: binary is dynamically linked — CGO leak"; exit 1)
+
+# =============================================================================
+# Stage 3: scanner
+# Purpose: CI-only Trivy filesystem scan of the compiled source tree.
+# This stage is targeted explicitly in CI with:
+#   --target scanner
+# It is NOT included in the final pushed image.
+# =============================================================================
+FROM builder AS scanner
+
+ARG SERVICE_NAME
+
+# Install Trivy for in-container filesystem scanning (CI gate).
+# The actual image scan in CI uses aquasecurity/trivy-action on the pushed image;
+# this stage provides a fast pre-push filesystem scan of the build context.
+RUN apk add --no-cache curl=8.9.0-r0
+
+RUN TRIVY_VERSION="0.54.1" && \
+    curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh" \
+      | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+
+# Scan the filesystem (Go source + downloaded modules).
+# Exit non-zero on CRITICAL findings to fail the CI build immediately.
+# --skip-dirs: skip /go/pkg/mod to reduce noise from transitive deps
+#              (module graph audit is handled separately by govulncheck).
+RUN trivy fs \
+      --exit-code 1 \
+      --severity CRITICAL \
+      --no-progress \
+      --skip-dirs /go/pkg/mod \
+      /build
+
+# =============================================================================
+# Stage 4: final
+# Purpose: Minimal production image containing only the compiled binary.
+# Based on Google Distroless static-debian12 (no shell, no package manager,
+# no OS packages beyond CA certs and tzdata).
+# =============================================================================
+FROM gcr.io/distroless/static-debian12:${DISTROLESS_TAG}@${DISTROLESS_DIGEST} AS final
+
+# Re-declare build args (ARG scope does not cross FROM boundaries).
+ARG SERVICE_NAME
+ARG VERSION
+ARG COMMIT
+ARG BUILD_DATE
+ARG PORT
+
+# OCI image labels (org.opencontainers.image.* standard).
+# These are read by Trivy, Docker Hub, and GitHub Packages for metadata display.
+LABEL org.opencontainers.image.title="DCMS ${SERVICE_NAME}" \
+      org.opencontainers.image.description="Generic Docker Container Management System — ${SERVICE_NAME}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/org/dcms" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="DCMS Project" \
+      dcms.service="${SERVICE_NAME}" \
+      dcms.port="${PORT}"
+
+# Copy only the compiled binary from the builder stage.
+# No source code, no Go toolchain, no shell interpreter is present in this image.
+COPY --from=builder /bin/service /service
+
+# Copy CA certificates from the builder (needed for outbound TLS calls).
+# Distroless already includes ca-certificates, but we copy the builder's
+# updated bundle to ensure parity with the build environment.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# Copy timezone data (needed for time.LoadLocation in Go).
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Run as non-root user uid=65534 (nobody) gid=65534 (nogroup).
+# Distroless nonroot tag sets this by default; this USER directive makes it explicit
+# and visible in Dockerfile scanning tools.
+USER 65534:65534
+
+# Expose the service HTTP port (overridden per service in docker-compose.yml).
+# The actual port value is injected via PORT env var at runtime.
+EXPOSE ${PORT}
+
+# HEALTHCHECK — uses wget which is NOT available in distroless.
+# The health check is therefore declared at the docker-compose / stack level,
+# not here, because distroless has no shell or wget.
+# The service binary exposes GET /health returning HTTP 200.
+# Compose-level HEALTHCHECK (example, set per service in compose files):
+#   test: ["CMD-SHELL", "wget -qO- http://localhost:${PORT}/health || exit 1"]
+# For Swarm, HEALTHCHECK is defined in the stack file:
+#   healthcheck:
+#     test: ["CMD", "/service", "-health-check"]
+#     interval: 15s
+#     timeout: 5s
+#     retries: 3
+#     start_period: 30s
+# NOTE: The service binary MUST support a -health-check flag that exits 0 on
+#       successful health check and 1 otherwise, OR the HEALTHCHECK test must
+#       use the HTTP endpoint through a sidecar tool.
+
+# The binary is the sole entrypoint. No shell wrapper.
+# Configuration is provided entirely through environment variables.
+ENTRYPOINT ["/service"]
+
+# Default CMD passes no additional arguments; services read all config from env.
+# Override in stack files or compose to pass flags, e.g.:
+#   command: ["--log-level=debug"]
+CMD []

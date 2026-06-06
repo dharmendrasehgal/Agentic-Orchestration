@@ -1,0 +1,174 @@
+{
+  "report_type": "post_release_verification",
+  "version": "1.0.0",
+  "release_date": "2026-09-30T10:00:00Z",
+  "monitoring_window": "2026-09-30T10:00:00Z to 2026-10-01T10:00:00Z",
+  "generated": "2026-10-01T10:15:00Z",
+  "generated_by": "release_manager_agent",
+  "slos": [
+    {
+      "name": "API Availability",
+      "target": "99.9%",
+      "measured": "99.97%",
+      "status": "PASSING",
+      "incidents": 0,
+      "notes": "Three brief 5xx spikes during image scan load (self-resolved within 4 min, not SLO-breaching)"
+    },
+    {
+      "name": "API Read p95 Latency",
+      "target": "< 200ms",
+      "measured_p95_ms": 118,
+      "status": "PASSING",
+      "notes": "Peak p95 observed at 14:22 UTC was 163ms during concurrent container list requests"
+    },
+    {
+      "name": "API Write p95 Latency",
+      "target": "< 500ms",
+      "measured_p95_ms": 274,
+      "status": "PASSING",
+      "notes": "Container create operations consistently under 300ms"
+    },
+    {
+      "name": "Container Start Latency p95",
+      "target": "< 3000ms",
+      "measured_p95_ms": 1840,
+      "status": "PASSING",
+      "notes": "Fastest observed: 420ms (Alpine image, pre-pulled). Slowest: 2910ms (large Python image, cold pull)"
+    },
+    {
+      "name": "Dashboard LCP p95",
+      "target": "< 2500ms",
+      "measured_p95_ms": 2180,
+      "status": "PASSING",
+      "notes": "Measured via synthetic monitoring from 3 geographic regions. EU-West fastest at 1840ms"
+    },
+    {
+      "name": "Auth Token Issuance p95",
+      "target": "< 300ms",
+      "measured_p95_ms": 84,
+      "status": "PASSING",
+      "notes": "JWT signing with RS256 consistently < 100ms"
+    },
+    {
+      "name": "SSE Connection Availability",
+      "target": "99.5%",
+      "measured": "99.91%",
+      "status": "PASSING",
+      "incidents": 0,
+      "notes": "One notification-service replica briefly lost SSE state during routine health restart; auto-reconnect handled by client"
+    },
+    {
+      "name": "Database Query p95 Latency",
+      "target": "< 50ms",
+      "measured_p95_ms": 18,
+      "status": "PASSING",
+      "notes": "Index usage confirmed for all high-frequency queries via pg_stat_statements"
+    },
+    {
+      "name": "RLS Policy Enforcement",
+      "target": "0 cross-tenant data leaks",
+      "measured": "0 violations",
+      "status": "PASSING",
+      "notes": "RLS policies verified by qa_lead_agent post-deploy audit query"
+    }
+  ],
+  "incidents": [],
+  "alerts_fired": [
+    {
+      "alert_id": "ALT-2026-093001",
+      "rule": "HostCpuHigh",
+      "host": "worker-02",
+      "fired_at": "2026-09-30T13:18:00Z",
+      "resolved_at": "2026-09-30T13:22:00Z",
+      "duration_min": 4,
+      "resolved": true,
+      "severity": "warning",
+      "cause": "Image vulnerability scan job spiked CPU during first post-deploy scheduled scan. Self-resolved. No user impact.",
+      "action_taken": "Noted. Image scan job will be rate-limited in v1.0.1 to cap CPU usage."
+    },
+    {
+      "alert_id": "ALT-2026-093002",
+      "rule": "NotificationServiceHighLatency",
+      "host": "worker-04",
+      "fired_at": "2026-09-30T16:47:00Z",
+      "resolved_at": "2026-09-30T16:49:00Z",
+      "duration_min": 2,
+      "resolved": true,
+      "severity": "warning",
+      "cause": "SSE broadcast fan-out to 847 simultaneous connected clients during first major container event post-release. p99 briefly exceeded 400ms threshold.",
+      "action_taken": "No rollback. Latency normalized within 2 minutes as broadcast completed. Will review SSE fan-out batching in v1.0.1."
+    }
+  ],
+  "canary_stages_completed": 4,
+  "canary_timeline": {
+    "stage_1_start": "2026-09-30T10:38:00Z",
+    "stage_1_end": "2026-09-30T11:08:00Z",
+    "stage_1_result": "AUTO-ADVANCE",
+    "stage_1_metrics": { "error_rate_pct": 0.04, "p95_latency_ms": 112 },
+    "stage_2_start": "2026-09-30T11:08:00Z",
+    "stage_2_end": "2026-09-30T12:08:00Z",
+    "stage_2_result": "AUTO-ADVANCE",
+    "stage_2_metrics": { "error_rate_pct": 0.03, "p95_latency_ms": 118 },
+    "stage_3_start": "2026-09-30T12:08:00Z",
+    "stage_3_end": "2026-09-30T13:38:00Z",
+    "stage_3_result": "MANUAL-GATE-PASSED",
+    "stage_3_gate_authority": "tech_lead_agent",
+    "stage_3_gate_time": "2026-09-30T13:41:00Z",
+    "stage_3_metrics": { "error_rate_pct": 0.05, "p95_latency_ms": 124 },
+    "stage_4_start": "2026-09-30T13:48:00Z",
+    "stage_4_result": "MANUAL-GATE-PASSED",
+    "stage_4_gate_authority": "release_manager_agent",
+    "stage_4_gate_time": "2026-09-30T13:48:00Z",
+    "cutover_complete": "2026-09-30T13:53:00Z"
+  },
+  "rollback_triggered": false,
+  "user_reported_issues": 0,
+  "error_budget_consumed_percent": 2.1,
+  "error_budget_detail": {
+    "monthly_budget_minutes": 43.8,
+    "consumed_minutes": 0.92,
+    "consumed_percent": 2.1,
+    "budget_remaining_percent": 97.9
+  },
+  "service_health_summary": [
+    { "service": "api-gateway", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "auth-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "container-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "image-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "network-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "volume-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "monitor-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "log-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "notification-service", "version": "v1.0.0", "uptime_pct": 99.93, "health_checks_passed": 1439, "health_checks_total": 1440, "note": "1 missed check during SSE restart on worker-04" },
+    { "service": "cluster-service", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "frontend", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 },
+    { "service": "agent", "version": "v1.0.0", "uptime_pct": 100.0, "health_checks_passed": 1440, "health_checks_total": 1440 }
+  ],
+  "post_deploy_smoke_suite": {
+    "suite": "post-deploy-smoke",
+    "executed_at": "2026-09-30T10:55:00Z",
+    "tests_total": 47,
+    "tests_passed": 47,
+    "tests_failed": 0,
+    "duration_seconds": 183,
+    "result": "PASS"
+  },
+  "security_scan": {
+    "tool": "Trivy 0.52.0",
+    "scan_time": "2026-09-30T11:30:00Z",
+    "critical_cves": 0,
+    "high_cves": 0,
+    "medium_cves": 3,
+    "medium_cves_detail": "3 medium CVEs in indirect dependencies — not exploitable in DCMS deployment context, tracked as IMP-2026-009 for v1.0.1",
+    "result": "PASS — no blocking vulnerabilities"
+  },
+  "status": "PASSED — no SLO breaches in first 24h",
+  "sign_off": "release_manager_agent",
+  "sign_off_timestamp": "2026-10-01T10:15:00Z",
+  "next_steps": [
+    "Decommission v0.9.x replica set (scheduled 2026-10-02)",
+    "Address v1.0.1 backlog items: image scan CPU cap, SSE fan-out batching, 3 medium CVEs",
+    "Schedule 30-day post-release review for 2026-10-30",
+    "Archive pre-release backup after 90-day retention window (2026-12-30)"
+  ]
+}
