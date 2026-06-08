@@ -1,3 +1,5 @@
+# Don't touch the code. Let the agents do everything.
+
 # Software Factory — Multi-Agent Workflow
 
 A complete, orchestrated agent system that takes **raw requirements** as input and
